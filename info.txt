@@ -1,0 +1,72 @@
+➜  aleo  cd /Users/rishav/Desktop/aleo/scripts && npm run deploy 2>&1
+
+> aleo-scripts@1.0.0 deploy
+> npx tsx deploy.ts
+
+🚀 Aleo Program Deployment Script
+==================================================
+
+📦 Initializing WebAssembly...
+Spawning 10 threads
+✅ WebAssembly initialized
+
+🔑 Setting up account...
+✅ Account address: aleo12tqus3ztgg3rkadgm5tqlsmnk073lstp5gxrztucg5whmfmlz5psc62skt
+
+🌐 Connecting to Aleo Testnet...
+✅ Connected to: https://api.explorer.provable.com/v1
+
+🔐 Setting up key provider...
+✅ Key provider initialized with caching enabled
+
+📄 Loading program...
+✅ Loaded program: payrollsystem.aleo
+   Size: 1555 bytes
+
+💰 Estimating deployment fee...
+✅ Estimated fee: [object Promise] microcredits (NaN credits)
+
+💳 Checking account balance...
+Disclaimer: Fee estimation is experimental and may not represent a correct estimate on any current or future network
+Check program has a valid name
+Check program imports are valid and add them to the process
+Create sample deployment
+Estimate the deployment fee
+✅ Account balance: undefined
+
+⚙️  Initializing Program Manager...
+✅ Program Manager ready
+
+🚀 Deploying program to Aleo Testnet...
+   This may take several minutes...
+Program payrollsystem.aleo does not exist on the network, deploying...
+Fetching proving keys from url https://parameters.aleo.org/testnet/fee_public.prover.f72b6ff
+Creating deployment transaction
+Checking program has a valid name
+Checking program imports are valid and add them to the process
+Creating deployment
+Ensuring the fee is sufficient to pay for the deployment
+Inserting externally provided fee proving and verifying keys
+Authorizing Fee
+Executing fee
+Verifying fee execution
+Verifying the deployment and fees
+Creating deployment transaction
+
+✅ Deployment transaction submitted!
+   Transaction ID: at1xhyupk7lwtzfcm33tk9cyehuq2y2343cyc5h8l4k5xjcsw88gy8q39ewvh
+
+⏳ Waiting for confirmation...
+............................................................
+⚠️  Transaction not yet confirmed. Check explorer for status.
+
+🔍 Verifying deployment...
+⚠️  Could not verify deployment yet. Check explorer.
+
+==================================================
+📋 Deployment Summary
+==================================================
+Program Name:    payrollsystem.aleo
+Transaction ID:  at1xhyupk7lwtzfcm33tk9cyehuq2y2343cyc5h8l4k5xjcsw88gy8q39ewvh
+Explorer URL:    https://explorer.provable.com/transaction/at1xhyupk7lwtzfcm33tk9cyehuq2y2343cyc5h8l4k5xjcsw88gy8q39ewvh
+Program URL:     https://explorer.provable.com/program/payrollsystem.aleo
