@@ -1,24 +1,16 @@
-import { WalletAdapterNetwork, Transaction } from "@demox-labs/aleo-wallet-adapter-base";
+import { TransactionOptions } from "@provablehq/aleo-types";
 
 // Re-export for convenience
-export { WalletAdapterNetwork, Transaction };
+export type { TransactionOptions };
 
 // Service Configuration Types
 export interface AleoServiceConfig {
     programId: string;
-    network: WalletAdapterNetwork;
     defaultFee: number;
 }
 
-// Transaction Builder Function Types
-export type TransactionBuilder = (
-    publicKey: string,
-    ...args: (string | number)[]
-) => Transaction;
-
 // Default Configuration
 export const DEFAULT_CONFIG: AleoServiceConfig = {
-    programId: "payrollsystem.aleo",
-    network: WalletAdapterNetwork.Testnet,
+    programId: "payroll_rishav_v2.aleo",
     defaultFee: 1_000_000, // 1 credit
 };

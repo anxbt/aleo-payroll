@@ -1,9 +1,15 @@
 {
-  "program": "payrollsystem.aleo",
-  "version": "0.1.0",
-  "description": "",
+  "program": "payroll_rishav_v2.aleo",
+  "version": "0.2.0",
+  "description": "Private payroll system with real credit integration",
   "license": "MIT",
   "leo": "3.4.0",
-  "dependencies": null,
+  "dependencies": [
+    {
+      "name": "credits.aleo",
+      "location": "network",
+      "network": "testnet"
+    }
+  ],
   "dev_dependencies": null
 }

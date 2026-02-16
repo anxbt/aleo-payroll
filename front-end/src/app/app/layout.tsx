@@ -1,6 +1,13 @@
+"use client"
+
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { Shield } from "lucide-react";
-import { WalletConnect } from "@/components/wallet-connect";
+
+const WalletConnect = dynamic(
+    () => import("@/components/wallet-connect").then(mod => ({ default: mod.WalletConnect })),
+    { ssr: false }
+);
 
 export default function AppLayout({
     children,

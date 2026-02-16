@@ -1,16 +1,17 @@
 "use client";
 
 import React, { FC, useMemo } from "react";
-import { WalletProvider as AleoWalletProvider } from "@demox-labs/aleo-wallet-adapter-react";
-import { WalletModalProvider } from "@demox-labs/aleo-wallet-adapter-reactui";
-import { LeoWalletAdapter } from "@demox-labs/aleo-wallet-adapter-leo";
+import { AleoWalletProvider } from "@provablehq/aleo-wallet-adaptor-react";
+import { WalletModalProvider } from "@provablehq/aleo-wallet-adaptor-react-ui";
+import { LeoWalletAdapter } from "@provablehq/aleo-wallet-adaptor-leo";
+import { ShieldWalletAdapter } from "@provablehq/aleo-wallet-adaptor-shield";
 import {
     DecryptPermission,
-    WalletAdapterNetwork,
-} from "@demox-labs/aleo-wallet-adapter-base";
+} from "@provablehq/aleo-wallet-adaptor-core";
+import { Network } from "@provablehq/aleo-types";
 
 // Default styles that can be overridden by your app
-import "@demox-labs/aleo-wallet-adapter-reactui/styles.css";
+import "@provablehq/aleo-wallet-adaptor-react-ui/dist/styles.css";
 
 interface WalletProviderProps {
     children: React.ReactNode;
@@ -25,9 +26,8 @@ export const WalletProvider: FC<WalletProviderProps> = ({ children }) => {
 
     const wallets = useMemo(
         () => [
-            new LeoWalletAdapter({
-                appName: "Aleo Private Pool",
-            }),
+            new LeoWalletAdapter(),
+            new ShieldWalletAdapter(),
         ],
         []
     );
@@ -40,7 +40,7 @@ export const WalletProvider: FC<WalletProviderProps> = ({ children }) => {
         <AleoWalletProvider
             wallets={wallets}
             decryptPermission={DecryptPermission.UponRequest}
-            network={WalletAdapterNetwork.Testnet}
+            network={Network.TESTNET}
             autoConnect
         >
             <WalletModalProvider>{children}</WalletModalProvider>
