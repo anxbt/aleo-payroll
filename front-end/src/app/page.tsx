@@ -12,6 +12,29 @@ import { SpotlightCard } from "@/components/animations/spotlight-card";
 import { Cubes } from "@/components/animations/cubes";
 
 export default function Home() {
+  const faqs = [
+    {
+      question: "How does the pool stay confidential?",
+      answer:
+        "All contributions and payouts are wrapped in zero-knowledge proofs. Amounts and participant identities remain encrypted while proofs attest to budget compliance.",
+    },
+    {
+      question: "Which wallets can I use?",
+      answer:
+        "We support Shield today and are adding other Aleo-compatible wallets next. Connect, fund, and sign proofs without exposing plaintext data.",
+    },
+    {
+      question: "Can contributors audit payouts?",
+      answer:
+        "Yes. Contributors see proof outputs and spent notes tied to their commitments, so they can confirm distributions without revealing allocations publicly.",
+    },
+    {
+      question: "What happens if the pool is underfunded?",
+      answer:
+        "Payout proofs enforce the budget cap. If deposits are insufficient, distributions fail gracefully until commitments are fully funded.",
+    },
+  ];
+
   return (
     <div className="flex min-h-screen flex-col">
       {/* Header */}
@@ -41,17 +64,16 @@ export default function Home() {
           <div className="max-w-4xl mx-auto px-4 md:px-6 text-center">
             <FadeIn delay={0.1}>
               <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl md:text-6xl mb-6">
-                <SplitText text="Private contribution pools on" />
+                <SplitText text="Confidential Payroll Infrastructure" />
                 <br />
                 <span className="text-accent">
-                  <DecryptedText text="Aleo" speed={80} />
+                  <DecryptedText text="on Aleo" speed={80} />
                 </span>
               </h1>
             </FadeIn>
             <FadeIn delay={0.4}>
               <p className="mx-auto max-w-2xl text-text-secondary text-lg md:text-xl mb-10">
-                Pool funds and distribute assets with zero-knowledge verification.
-                Contributions, allocations, and identities remain private by default.
+                Define payout commitments, enforce budget constraints, and execute private credit transfers — without revealing contributor identities or allocation amounts.
               </p>
             </FadeIn>
             <FadeIn delay={0.6}>
@@ -85,9 +107,7 @@ export default function Home() {
                     <DecryptedText text="Cryptographic Privacy" speed={60} />
                   </h2>
                   <p className="text-text-secondary">
-                    Every transaction is verified using zero-knowledge proofs.
-                    This allows the network to confirm validity without revealing
-                    any sensitive information about amounts, recipients, or participants.
+                    Zero-knowledge proofs enforce pool rules while keeping contributors, recipients, and amounts opaque to the network. Only validity — not details — is broadcast.
                   </p>
                 </div>
               </FadeIn>
@@ -101,7 +121,7 @@ export default function Home() {
             <FadeIn className="text-center mb-12">
               <p className="text-sm text-accent font-medium mb-2">How it works</p>
               <h2 className="text-3xl font-semibold tracking-tight">
-                Zero-knowledge privacy in three steps
+                Ship payroll with private proofs
               </h2>
             </FadeIn>
             <div className="grid md:grid-cols-3 gap-6">
@@ -111,11 +131,11 @@ export default function Home() {
                     <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center mb-3">
                       <Lock className="h-5 w-5 text-accent" />
                     </div>
-                    <CardTitle>1. Contribute privately</CardTitle>
+                    <CardTitle>1. Define commitments</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <CardDescription>
-                      Deposit funds into the pool. Your identity and amount remain hidden from public view.
+                      Set recipients, lock budgets, and encode rules into commitments that govern each payout.
                     </CardDescription>
                   </CardContent>
                 </SpotlightCard>
@@ -126,11 +146,11 @@ export default function Home() {
                     <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center mb-3">
                       <Shield className="h-5 w-5 text-accent" />
                     </div>
-                    <CardTitle>2. Verify with ZK proofs</CardTitle>
+                    <CardTitle>2. Fund privately</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <CardDescription>
-                      Zero-knowledge proofs validate transitions without exposing any underlying data.
+                      Contributors deposit credits into the pool. Balances stay shielded while proofs track obligations.
                     </CardDescription>
                   </CardContent>
                 </SpotlightCard>
@@ -141,11 +161,11 @@ export default function Home() {
                     <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center mb-3">
                       <Send className="h-5 w-5 text-accent" />
                     </div>
-                    <CardTitle>3. Distribute privately</CardTitle>
+                    <CardTitle>3. Prove and pay out</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <CardDescription>
-                      Trigger distributions to pool members. Allocations stay encrypted on-chain.
+                      Generate proofs showing releases respect budgets. Recipients receive encrypted records; the network only sees validity.
                     </CardDescription>
                   </CardContent>
                 </SpotlightCard>
@@ -154,12 +174,35 @@ export default function Home() {
           </div>
         </section>
 
+        {/* FAQ Section */}
+        <section className="py-20 md:py-28 border-t border-border bg-surface/20">
+          <div className="max-w-4xl mx-auto px-4 md:px-6">
+            <FadeIn className="text-center mb-10">
+              <p className="text-sm text-accent font-medium mb-2">FAQ</p>
+              <h2 className="text-3xl font-semibold tracking-tight">What to know before you fund</h2>
+            </FadeIn>
+            <div className="space-y-4">
+              {faqs.map((item) => (
+                <FadeIn key={item.question}>
+                  <details className="group border border-border rounded-xl bg-surface/40 px-5 py-4 transition-colors">
+                    <summary className="flex cursor-pointer items-center justify-between text-left text-lg font-medium text-text-primary">
+                      <span>{item.question}</span>
+                      <span className="text-sm text-accent transition-transform duration-200 group-open:rotate-45">+</span>
+                    </summary>
+                    <p className="mt-3 text-text-secondary leading-relaxed">{item.answer}</p>
+                  </details>
+                </FadeIn>
+              ))}
+            </div>
+          </div>
+        </section>
+
         {/* CTA Section */}
         <section className="py-20 border-t border-border">
           <FadeIn className="max-w-3xl mx-auto px-4 md:px-6 text-center">
-            <h2 className="text-2xl font-semibold mb-4">Ready to contribute privately?</h2>
+            <h2 className="text-2xl font-semibold mb-4">Move payroll to private rails</h2>
             <p className="text-text-secondary mb-8">
-              Join the pool and experience true financial privacy on Aleo.
+              Launch a pool, fund it with shielded credits, and release payouts with cryptographic assurance on Aleo.
             </p>
             <Link href="/app">
               <Button size="lg" className="px-10">
