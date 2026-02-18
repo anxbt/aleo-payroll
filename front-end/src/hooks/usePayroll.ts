@@ -196,7 +196,6 @@ export function usePayrollContract() {
         try {
             const records = await requestRecords(PROGRAM_ID, true);
             console.log("[getPayrollRecords] raw:", records);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             return (records as any[])
                 .filter((r: any) => {
                     if (r.spent === true || r.spent === "true") return false;
@@ -264,7 +263,6 @@ export function usePayrollContract() {
         try {
             const records = await requestRecords(PROGRAM_ID, true);
             console.log("[getContributorRecords] raw:", records);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             return (records as any[])
                 .filter((r: any) => {
                     if (r.spent === true || r.spent === "true") return false;
@@ -343,7 +341,6 @@ export function usePayrollContract() {
 
         try {
             const records = await requestRecords(PROGRAM_ID, true);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             return (records as any[])
                 .filter((r: any) => {
                     if (r.spent === true || r.spent === "true") return false;
@@ -413,7 +410,6 @@ export function usePayrollContract() {
                 console.log("[getCreditRecords] first record:", records[0]);
             }
 
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             return (records as any[])
                 .filter((r: any) => {
                     // Skip explicitly spent records
