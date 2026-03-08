@@ -11,6 +11,6 @@ export interface AleoServiceConfig {
 
 // Default Configuration
 export const DEFAULT_CONFIG: AleoServiceConfig = {
-    programId: "payroll_rishav_v2.aleo",
+    programId: "payroll_rishav_v3.aleo",
     defaultFee: 1_000_000, // 1 credit
 };

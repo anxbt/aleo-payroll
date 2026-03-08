@@ -1,5 +1,5 @@
 {
-  "program": "payroll_rishav_v2.aleo",
+  "program": "payroll_rishav_v3.aleo",
   "version": "0.2.0",
   "description": "Private payroll system with real credit integration",
   "license": "MIT",

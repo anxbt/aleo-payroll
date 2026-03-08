@@ -7,6 +7,8 @@ import {
     buildInitPayrollTransaction,
     buildAddContributorTransaction,
     buildPayContributorTransaction,
+    buildBatchPay2Transaction,
+    buildBatchPay3Transaction,
     buildDiscloseSpentTransaction,
 } from "@/lib/aleo-service";
 import type { 
@@ -23,6 +25,7 @@ export function usePayrollContract() {
         executeTransaction,
         transactionStatus,
         requestRecords,
+        decrypt,
     } = useWallet();
 
     const [isLoading, setIsLoading] = useState(false);
@@ -31,9 +34,10 @@ export function usePayrollContract() {
 
     // Cleanup polling on unmount
     useEffect(() => {
+        const ref = pollingRef.current;
         return () => {
-            if (pollingRef.current) {
-                clearInterval(pollingRef.current);
+            if (ref) {
+                clearInterval(ref);
             }
         };
     }, []);
@@ -79,9 +83,8 @@ export function usePayrollContract() {
         return { status: "Timeout", finalized: false };
     }, [transactionStatus]);
 
-    // Initialize a new payroll by verifying credits
+    // Initialize a new payroll (no credits consumed — budget tracking only)
     const initPayroll = useCallback(async (
-        creditRecord: string,
         budget: number
     ): Promise<string> => {
         if (!address) throw new Error("Wallet not connected");
@@ -91,9 +94,8 @@ export function usePayrollContract() {
         setError(null);
 
         try {
-            const txOptions = buildInitPayrollTransaction(creditRecord, budget);
+            const txOptions = buildInitPayrollTransaction(budget);
             console.log("[initPayroll] txOptions:", JSON.stringify(txOptions, null, 2));
-            console.log("[initPayroll] creditRecord length:", creditRecord.length, "starts with:", creditRecord.slice(0, 20));
             const result = await executeTransaction(txOptions);
             console.log("[initPayroll] result:", result);
             return result?.transactionId || "";
@@ -136,7 +138,7 @@ export function usePayrollContract() {
         }
     }, [address, executeTransaction]);
 
-    // Pay a contributor - deterministic payout from record
+    // Pay a single contributor — funding credit must have microcredits >= payout
     const payContributor = useCallback(async (
         payrollRecord: string,
         contributorRecord: string,
@@ -158,6 +160,50 @@ export function usePayrollContract() {
             return result?.transactionId || "";
         } catch (err) {
             const message = err instanceof Error ? err.message : "Failed to pay contributor";
+            setError(message);
+            throw err;
+        } finally {
+            setIsLoading(false);
+        }
+    }, [address, executeTransaction]);
+
+    // Batch pay 2 or 3 contributors in a single transaction
+    const batchPayContributors = useCallback(async (
+        payrollRecord: string,
+        contributorRecords: string[],
+        fundingCredits: string[]
+    ): Promise<string> => {
+        if (!address) throw new Error("Wallet not connected");
+        if (!executeTransaction) throw new Error("Execute transaction not available");
+        if (contributorRecords.length !== fundingCredits.length) {
+            throw new Error("Contributor and funding credit arrays must match");
+        }
+        if (contributorRecords.length < 2 || contributorRecords.length > 3) {
+            throw new Error("Batch pay supports 2 or 3 contributors");
+        }
+
+        setIsLoading(true);
+        setError(null);
+
+        try {
+            let txOptions;
+            if (contributorRecords.length === 2) {
+                txOptions = buildBatchPay2Transaction(
+                    payrollRecord,
+                    contributorRecords[0], contributorRecords[1],
+                    fundingCredits[0], fundingCredits[1]
+                );
+            } else {
+                txOptions = buildBatchPay3Transaction(
+                    payrollRecord,
+                    contributorRecords[0], contributorRecords[1], contributorRecords[2],
+                    fundingCredits[0], fundingCredits[1], fundingCredits[2]
+                );
+            }
+            const result = await executeTransaction(txOptions);
+            return result?.transactionId || "";
+        } catch (err) {
+            const message = err instanceof Error ? err.message : "Failed to batch pay contributors";
             setError(message);
             throw err;
         } finally {
@@ -194,66 +240,123 @@ export function usePayrollContract() {
         if (!requestRecords) throw new Error("Request records not available");
 
         try {
+            // Pass true to request decrypted plaintext from the wallet
             const records = await requestRecords(PROGRAM_ID, true);
-            console.log("[getPayrollRecords] raw:", records);
-            return (records as any[])
-                .filter((r: any) => {
-                    if (r.spent === true || r.spent === "true") return false;
-                    if (r.recordName && r.recordName !== "Payroll") return false;
-                    // If no recordName, check plaintext for Payroll fields
-                    if (!r.recordName) {
-                        const pt = r.recordPlaintext || r.plaintext || "";
-                        if (!pt.includes("total_budget")) return false;
+            console.log("[getPayrollRecords] raw records:", JSON.stringify(records, null, 2));
+            
+            // Filter to unspent Payroll records
+            const payrollRecords = (records as any[]).filter((r: any) => {
+                if (r.spent === true || r.spent === "true") return false;
+                if (r.recordName && r.recordName !== "Payroll") return false;
+                if (!r.recordName) {
+                    const pt = r.recordPlaintext || r.plaintext || r.data?.toString() || JSON.stringify(r);
+                    if (!pt.includes("total_budget")) return false;
+                }
+                return true;
+            });
+
+            // Decrypt records that don't have plaintext yet
+            const decryptedRecords = await Promise.all(
+                payrollRecords.map(async (r: any) => {
+                    let pt = r.recordPlaintext || r.plaintext || "";
+                    
+                    // If plaintext is empty but we have ciphertext, try to decrypt
+                    if (!pt && r.recordCiphertext && decrypt) {
+                        try {
+                            pt = await decrypt(r.recordCiphertext);
+                            console.log("[getPayrollRecords] decrypted:", pt);
+                        } catch (decryptErr) {
+                            console.warn("[getPayrollRecords] decrypt failed:", decryptErr);
+                        }
                     }
-                    return true;
+
+                    return { ...r, _plaintext: pt };
                 })
-                .map((r: any, index: number) => {
-                    const pt = r.recordPlaintext || r.plaintext || "";
+            );
 
-                    // Parse total_budget
-                    let total_budget = 0;
-                    if (r.data?.total_budget !== undefined) {
-                        total_budget = Number(String(r.data.total_budget).replace(/u64(\.private)?/, "").trim());
-                    } else {
-                        const m = pt.match(/total_budget:\s*(\d+)u64/);
-                        if (m) total_budget = Number(m[1]);
+            const parsed = decryptedRecords.map((r: any, index: number) => {
+                const pt = r._plaintext || "";
+                const fullStr = pt || JSON.stringify(r);
+                console.log(`[getPayrollRecords] record ${index} plaintext:`, pt.slice(0, 300));
+
+                // Parse total_budget - try multiple formats
+                let total_budget = 0;
+                if (r.data?.total_budget !== undefined) {
+                    const raw = String(r.data.total_budget);
+                    total_budget = Number(raw.replace(/u64(\.private)?/g, "").trim());
+                }
+                if (total_budget === 0) {
+                    const patterns = [
+                        /total_budget:\s*(\d+)u64/,
+                        /total_budget:\s*(\d+)/,
+                    ];
+                    for (const pattern of patterns) {
+                        const m = pt.match(pattern) || fullStr.match(pattern);
+                        if (m) {
+                            total_budget = Number(m[1]);
+                            break;
+                        }
                     }
+                }
 
-                    // Parse spent_budget
-                    let spent_budget = 0;
-                    if (r.data?.spent_budget !== undefined) {
-                        spent_budget = Number(String(r.data.spent_budget).replace(/u64(\.private)?/, "").trim());
-                    } else {
-                        const m = pt.match(/spent_budget:\s*(\d+)u64/);
-                        if (m) spent_budget = Number(m[1]);
+                // Parse spent_budget
+                let spent_budget = 0;
+                if (r.data?.spent_budget !== undefined) {
+                    const raw = String(r.data.spent_budget);
+                    spent_budget = Number(raw.replace(/u64(\.private)?/g, "").trim());
+                }
+                if (spent_budget === 0 && total_budget > 0) {
+                    const patterns = [
+                        /spent_budget:\s*(\d+)u64/,
+                        /spent_budget:\s*(\d+)/,
+                    ];
+                    for (const pattern of patterns) {
+                        const m = pt.match(pattern) || fullStr.match(pattern);
+                        if (m) {
+                            spent_budget = Number(m[1]);
+                            break;
+                        }
                     }
+                }
 
-                    // Owner
-                    let ownerAddr = "";
-                    if (r.sender && String(r.sender).startsWith("aleo1")) ownerAddr = r.sender;
-                    else if (r.owner && String(r.owner).startsWith("aleo1")) ownerAddr = r.owner;
-                    else {
-                        const om = pt.match(/owner:\s*(aleo1[a-z0-9]+)/);
-                        if (om) ownerAddr = om[1];
-                    }
+                // Owner
+                let ownerAddr = "";
+                if (r.sender && String(r.sender).startsWith("aleo1")) ownerAddr = r.sender;
+                else if (r.owner && String(r.owner).startsWith("aleo1")) ownerAddr = r.owner;
+                else if (r.data?.owner) {
+                    const ownerStr = String(r.data.owner).replace(".private", "");
+                    if (ownerStr.startsWith("aleo1")) ownerAddr = ownerStr;
+                }
+                if (!ownerAddr) {
+                    const om = pt.match(/owner:\s*(aleo1[a-z0-9]+)/);
+                    if (om) ownerAddr = om[1];
+                }
 
-                    const id = r.commitment || r.id || r.nonce || `payroll-${index}`;
+                const id = r.commitment || r.id || r.nonce || `payroll-${index}`;
+                const remaining = total_budget - spent_budget;
 
-                    return {
-                        id: String(id).replace("field", ""),
-                        owner: ownerAddr || address,
-                        total_budget,
-                        spent_budget,
-                        remaining_budget: total_budget - spent_budget,
-                        ciphertext: r.recordCiphertext || r.ciphertext || "",
-                        plaintext: pt,
-                    };
+                console.log(`[getPayrollRecords] parsed record ${index}:`, {
+                    id, total_budget, spent_budget, remaining
                 });
+
+                return {
+                    id: String(id).replace("field", ""),
+                    owner: ownerAddr || address,
+                    total_budget,
+                    spent_budget,
+                    remaining_budget: remaining,
+                    ciphertext: r.recordCiphertext || r.ciphertext || "",
+                    plaintext: pt,
+                };
+            });
+
+            console.log("[getPayrollRecords] final parsed:", parsed);
+            return parsed;
         } catch (err) {
             console.error("Failed to get payroll records:", err);
             return [];
         }
-    }, [address, requestRecords]);
+    }, [address, requestRecords, decrypt]);
 
     // Fetch contributor records
     const getContributorRecords = useCallback(async (): Promise<ContributorRecord[]> => {
@@ -261,20 +364,38 @@ export function usePayrollContract() {
         if (!requestRecords) throw new Error("Request records not available");
 
         try {
+            // Pass true to request decrypted plaintext from the wallet
             const records = await requestRecords(PROGRAM_ID, true);
             console.log("[getContributorRecords] raw:", records);
-            return (records as any[])
-                .filter((r: any) => {
-                    if (r.spent === true || r.spent === "true") return false;
-                    if (r.recordName && r.recordName !== "Contributor") return false;
-                    if (!r.recordName) {
-                        const pt = r.recordPlaintext || r.plaintext || "";
-                        if (!pt.includes("payroll_owner")) return false;
-                    }
-                    return true;
-                })
-                .map((r: any, index: number) => {
+            
+            // Filter to unspent Contributor records
+            const contributorRecords = (records as any[]).filter((r: any) => {
+                if (r.spent === true || r.spent === "true") return false;
+                if (r.recordName && r.recordName !== "Contributor") return false;
+                if (!r.recordName) {
                     const pt = r.recordPlaintext || r.plaintext || "";
+                    if (!pt.includes("payroll_owner")) return false;
+                }
+                return true;
+            });
+
+            // Decrypt records that don't have plaintext yet
+            const decryptedRecords = await Promise.all(
+                contributorRecords.map(async (r: any) => {
+                    let pt = r.recordPlaintext || r.plaintext || "";
+                    if (!pt && r.recordCiphertext && decrypt) {
+                        try {
+                            pt = await decrypt(r.recordCiphertext);
+                        } catch (e) {
+                            console.warn("[getContributorRecords] decrypt failed:", e);
+                        }
+                    }
+                    return { ...r, _plaintext: pt };
+                })
+            );
+
+            return decryptedRecords.map((r: any, index: number) => {
+                    const pt = r._plaintext || "";
 
                     let ownerAddr = "";
                     if (r.sender && String(r.sender).startsWith("aleo1")) ownerAddr = r.sender;
@@ -332,7 +453,7 @@ export function usePayrollContract() {
             console.error("Failed to get contributor records:", err);
             return [];
         }
-    }, [address, requestRecords]);
+    }, [address, requestRecords, decrypt]);
 
     // Fetch payment receipts
     const getPaymentReceipts = useCallback(async (): Promise<PaymentReceiptRecord[]> => {
@@ -340,6 +461,7 @@ export function usePayrollContract() {
         if (!requestRecords) throw new Error("Request records not available");
 
         try {
+            // Pass true to request decrypted plaintext from the wallet
             const records = await requestRecords(PROGRAM_ID, true);
             return (records as any[])
                 .filter((r: any) => {
@@ -391,7 +513,7 @@ export function usePayrollContract() {
             console.error("Failed to get payment receipts:", err);
             return [];
         }
-    }, [address, requestRecords]);
+    }, [address, requestRecords, decrypt]);
 
     // Fetch user's unspent private credit records from credits.aleo
     const getCreditRecords = useCallback(async (): Promise<CreditRecord[]> => {
@@ -399,32 +521,39 @@ export function usePayrollContract() {
         if (!requestRecords) throw new Error("Request records not available");
 
         try {
-            // Request records with plaintext so we can read field values
+            // Pass true to request decrypted plaintext from the wallet
             const records = await requestRecords("credits.aleo", true);
             
-            // Debug: log raw records so we can inspect the wallet's response shape
             console.log("[getCreditRecords] raw records from wallet:", JSON.stringify(records, null, 2));
             console.log("[getCreditRecords] record count:", records?.length ?? 0);
-            if (records?.length > 0) {
-                console.log("[getCreditRecords] first record keys:", Object.keys(records[0] as object));
-                console.log("[getCreditRecords] first record:", records[0]);
-            }
 
-            return (records as any[])
-                .filter((r: any) => {
-                    // Skip explicitly spent records
-                    if (r.spent === true || r.spent === "true") return false;
+            // Filter unspent credit records
+            const creditRecords = (records as any[]).filter((r: any) => {
+                if (r.spent === true || r.spent === "true") return false;
+                if (r.recordName && r.recordName !== "credits") return false;
+                return true;
+            });
 
-                    // Accept if recordName matches OR if there's no recordName
-                    // (some wallets don't include recordName for credits.aleo)
-                    if (r.recordName && r.recordName !== "credits") return false;
+            console.log("[getCreditRecords] unspent count:", creditRecords.length);
 
-                    return true;
+            // Decrypt records that don't have plaintext yet
+            const decryptedRecords = await Promise.all(
+                creditRecords.map(async (r: any) => {
+                    let pt = r.recordPlaintext || r.plaintext || "";
+                    if (!pt && r.recordCiphertext && decrypt) {
+                        try {
+                            pt = await decrypt(r.recordCiphertext);
+                        } catch (e) {
+                            console.warn("[getCreditRecords] decrypt failed:", e);
+                        }
+                    }
+                    return { ...r, _plaintext: pt };
                 })
+            );
+
+            return decryptedRecords
                 .map((r: any) => {
-                    // Parse microcredits from all possible locations:
-                    // Shield wallet: r.recordPlaintext string ("microcredits: 16915906u64.private")
-                    // Leo wallet: r.data.microcredits or r.microcredits
+                    const pt = r._plaintext || "";
                     let microcredits = 0;
 
                     if (r.data?.microcredits !== undefined) {
@@ -433,45 +562,34 @@ export function usePayrollContract() {
                         microcredits = Number(String(r.microcredits).replace(/u64(\.private)?/, "").trim());
                     }
                     
-                    // Parse from recordPlaintext (Shield wallet format)
-                    if (microcredits === 0 && r.recordPlaintext) {
-                        const match = String(r.recordPlaintext).match(/microcredits:\s*(\d+)u64/);
+                    if (microcredits === 0 && pt) {
+                        const match = String(pt).match(/microcredits:\s*(\d+)u64/);
                         if (match) microcredits = Number(match[1]);
                     }
 
-                    // Fallback: parse from plaintext (other wallets)
-                    if (microcredits === 0 && r.plaintext) {
-                        const match = String(r.plaintext).match(/microcredits:\s*(\d+)u64/);
-                        if (match) microcredits = Number(match[1]);
-                    }
-
-                    // Record ciphertext to pass into transactions
-                    // Shield: r.recordCiphertext, Leo: r.ciphertext
                     const ciphertext = r.recordCiphertext || r.ciphertext || r.record || "";
 
-                    // Owner address: Shield puts a field element in r.owner,
-                    // actual address is in r.sender or parsed from plaintext
                     let ownerAddr = "";
                     if (r.sender && String(r.sender).startsWith("aleo1")) {
                         ownerAddr = r.sender;
                     } else if (r.owner && String(r.owner).startsWith("aleo1")) {
                         ownerAddr = r.owner;
-                    } else if (r.recordPlaintext || r.plaintext) {
-                        const pt = r.recordPlaintext || r.plaintext;
+                    } else if (pt) {
                         const ownerMatch = String(pt).match(/owner:\s*(aleo1[a-z0-9]+)/);
                         if (ownerMatch) ownerAddr = ownerMatch[1];
                     }
 
-                    // Unique ID from commitment (most reliable) or fallbacks
                     const id = r.commitment || r.id || r.nonce || r.serial_number || 
                                ciphertext?.slice(0, 40) || String(Math.random());
+
+                    console.log(`[getCreditRecords] record:`, { id: String(id).slice(0, 20), microcredits, spent: r.spent });
 
                     return {
                         id: String(id).replace("field", ""),
                         owner: ownerAddr || address,
                         microcredits,
                         ciphertext,
-                        plaintext: r.recordPlaintext || r.plaintext || "",
+                        plaintext: pt,
                     };
                 })
                 .filter((r) => r.microcredits > 0 && (r.ciphertext !== "" || r.plaintext !== ""));
@@ -479,7 +597,7 @@ export function usePayrollContract() {
             console.error("Failed to get credit records:", err);
             return [];
         }
-    }, [address, requestRecords]);
+    }, [address, requestRecords, decrypt]);
 
     return {
         // State
@@ -492,6 +610,7 @@ export function usePayrollContract() {
         initPayroll,
         addContributor,
         payContributor,
+        batchPayContributors,
         discloseSpent,
 
         // Record Management

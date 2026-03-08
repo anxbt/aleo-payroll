@@ -1,9 +1,9 @@
-// Record Types matching payrollsystem.aleo contract (Wave 2)
-// ARCHITECTURE NOTE: True credit custody inside records is impossible in Leo
-// because records cannot contain external records. This architecture uses:
-// 1. Credit verification at init (consume credit, verify amount, track budget)
-// 2. Owner-provided exact funding at payment time (funding_credit amount must match contributor.payout)
-// 3. Contract enforces deterministic payout and prevents double payment
+// Record Types matching payroll_rishav_v3.aleo contract (Wave 3)
+// ARCHITECTURE:
+// 1. init_payroll creates budget-tracking record (no credits consumed)
+// 2. add_contributor reserves budget immediately (spent_budget incremented)
+// 3. pay_contributor / batch_pay accepts funding_credit >= payout (change returned)
+// 4. Contract enforces deterministic payout and prevents double payment
 
 // Credits record from credits.aleo
 export interface CreditRecord {
@@ -14,8 +14,8 @@ export interface CreditRecord {
     plaintext: string;    // plaintext record string for transaction inputs
 }
 
-// Payroll record - internal budget tracking only
-// The actual credits are not stored (Leo limitation)
+// Payroll record - internal budget tracking
+// spent_budget includes committed (added) + paid contributors
 export interface PayrollRecord {
     id: string;
     owner: string;
@@ -77,8 +77,7 @@ export interface PayrollState {
 
 // Form Input Types
 export interface InitPayrollInput {
-    creditRecordId: string;  // Credit record to verify (amount must match budget)
-    budget: number;          // Must exactly match credit amount
+    budget: number;  // Budget in microcredits
 }
 
 export interface AddContributorInput {
@@ -90,10 +89,17 @@ export interface AddContributorInput {
 export interface PayContributorInput {
     payrollRecordId: string;
     contributorRecordId: string;
-    fundingCreditId: string;  // Must EXACTLY match contributor.payout
+    fundingCreditId: string;  // Must have microcredits >= contributor.payout
+}
+
+export interface BatchPayInput {
+    payrollRecordId: string;
+    payments: Array<{
+        contributorRecordId: string;
+        fundingCreditId: string;
+    }>;
 }
 
 export interface DiscloseSpentInput {
     payrollRecordId: string;
-    originalBudget: number;  // Required to calculate spent amount
 }

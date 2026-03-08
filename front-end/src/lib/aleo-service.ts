@@ -3,32 +3,30 @@ import {
 } from "@provablehq/aleo-types";
 
 // Contract Configuration
-export const PROGRAM_ID = "payroll_rishav_v2.aleo";
+export const PROGRAM_ID = "payroll_rishav_v3.aleo";
 export const DEFAULT_FEE = 1_000_000; // 1 credit = 1,000,000 microcredits
 
 /**
  * Build transaction to initialize a new payroll
- * Note: The credit record amount must exactly match the budget
- * @param creditRecord - The credit record to verify (ciphertext) - must match budget exactly
- * @param budget - The budget amount in microcredits (must equal credit amount)
+ * No credits are consumed — this only creates a budget-tracking record.
+ * @param budget - The budget amount in microcredits
  */
 export function buildInitPayrollTransaction(
-    creditRecord: string,
     budget: number
 ): TransactionOptions {
     return {
         program: PROGRAM_ID,
         function: "init_payroll",
-        inputs: [creditRecord, `${budget}u64`],
+        inputs: [`${budget}u64`],
         fee: DEFAULT_FEE,
         privateFee: false,
-        recordIndices: [0],  // input[0] is a credits.aleo/credits record
     };
 }
 
 /**
  * Build transaction to add a contributor to a payroll
- * @param payrollRecord - The encrypted payroll record ciphertext
+ * Budget is reserved immediately (spent_budget incremented).
+ * @param payrollRecord - The payroll record plaintext/ciphertext
  * @param contributor - The contributor's Aleo address
  * @param payout - The payout amount in microcredits (committed in Contributor record)
  */
@@ -47,13 +45,13 @@ export function buildAddContributorTransaction(
 }
 
 /**
- * Build transaction to pay a contributor
- * Uses deterministic payout from contributor record (contributor.payout)
- * Owner must provide exact funding credit matching the payout amount
+ * Build transaction to pay a single contributor
+ * Funding credit must have microcredits >= contributor.payout.
+ * Change is returned to caller automatically by credits.aleo.
  * 
- * @param payrollRecord - The encrypted payroll record ciphertext
- * @param contributorRecord - The encrypted contributor record ciphertext
- * @param fundingCredit - The credit record to fund the payout (amount must EXACTLY match contributor.payout)
+ * @param payrollRecord - The payroll record plaintext/ciphertext
+ * @param contributorRecord - The contributor record plaintext/ciphertext
+ * @param fundingCredit - The credit record to fund the payout (amount >= contributor.payout)
  */
 export function buildPayContributorTransaction(
     payrollRecord: string,
@@ -70,8 +68,50 @@ export function buildPayContributorTransaction(
 }
 
 /**
+ * Build transaction to batch-pay 2 contributors in a single transaction.
+ * Each contributor needs its own funding credit (>= payout).
+ */
+export function buildBatchPay2Transaction(
+    payrollRecord: string,
+    c1Record: string,
+    c2Record: string,
+    f1Credit: string,
+    f2Credit: string
+): TransactionOptions {
+    return {
+        program: PROGRAM_ID,
+        function: "batch_pay_2",
+        inputs: [payrollRecord, c1Record, c2Record, f1Credit, f2Credit],
+        fee: DEFAULT_FEE,
+        privateFee: false
+    };
+}
+
+/**
+ * Build transaction to batch-pay 3 contributors in a single transaction.
+ * Each contributor needs its own funding credit (>= payout).
+ */
+export function buildBatchPay3Transaction(
+    payrollRecord: string,
+    c1Record: string,
+    c2Record: string,
+    c3Record: string,
+    f1Credit: string,
+    f2Credit: string,
+    f3Credit: string
+): TransactionOptions {
+    return {
+        program: PROGRAM_ID,
+        function: "batch_pay_3",
+        inputs: [payrollRecord, c1Record, c2Record, c3Record, f1Credit, f2Credit, f3Credit],
+        fee: DEFAULT_FEE,
+        privateFee: false
+    };
+}
+
+/**
  * Build transaction to disclose the spent budget
- * @param payrollRecord - The encrypted payroll record ciphertext
+ * @param payrollRecord - The payroll record plaintext/ciphertext
  */
 export function buildDiscloseSpentTransaction(
     payrollRecord: string
