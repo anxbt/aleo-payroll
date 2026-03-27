@@ -1,148 +1,168 @@
-import { 
-    TransactionOptions
-} from "@provablehq/aleo-types";
+import { TransactionOptions } from "@provablehq/aleo-types";
+import { DEPLOYED_PROGRAM_ID } from "@/lib/deployment";
 
-// Contract Configuration
-export const PROGRAM_ID = "payroll_rishav_v3.aleo";
-export const DEFAULT_FEE = 1_000_000; // 1 credit = 1,000,000 microcredits
+export const PROGRAM_ID = DEPLOYED_PROGRAM_ID;
+export const DEFAULT_FEE = 1_000_000;
 
-/**
- * Build transaction to initialize a new payroll
- * No credits are consumed — this only creates a budget-tracking record.
- * @param budget - The budget amount in microcredits
- */
 export function buildInitPayrollTransaction(
-    budget: number
+    payrollId: string,
+    budgetUsdCents: number,
+    microcreditsPerUsdCent: number,
+    manager: string
 ): TransactionOptions {
     return {
         program: PROGRAM_ID,
         function: "init_payroll",
-        inputs: [`${budget}u64`],
+        inputs: [
+            `${payrollId}field`,
+            `${budgetUsdCents}u64`,
+            `${microcreditsPerUsdCent}u64`,
+            manager,
+        ],
         fee: DEFAULT_FEE,
         privateFee: false,
     };
 }
 
-/**
- * Build transaction to add a contributor to a payroll
- * Budget is reserved immediately (spent_budget incremented).
- * @param payrollRecord - The payroll record plaintext/ciphertext
- * @param contributor - The contributor's Aleo address
- * @param payout - The payout amount in microcredits (committed in Contributor record)
- */
 export function buildAddContributorTransaction(
     payrollRecord: string,
     contributor: string,
-    payout: number
+    payoutUsdCents: number,
+    recurring: boolean
 ): TransactionOptions {
     return {
         program: PROGRAM_ID,
         function: "add_contributor",
-        inputs: [payrollRecord, contributor, `${payout}u64`],
+        inputs: [payrollRecord, contributor, `${payoutUsdCents}u64`, recurring ? "true" : "false"],
         fee: DEFAULT_FEE,
-        privateFee: false
+        privateFee: false,
     };
 }
 
-/**
- * Build transaction to pay a single contributor
- * Funding credit must have microcredits >= contributor.payout.
- * Change is returned to caller automatically by credits.aleo.
- * 
- * @param payrollRecord - The payroll record plaintext/ciphertext
- * @param contributorRecord - The contributor record plaintext/ciphertext
- * @param fundingCredit - The credit record to fund the payout (amount >= contributor.payout)
- */
-export function buildPayContributorTransaction(
+export function buildRunPayrollTransaction(
     payrollRecord: string,
-    contributorRecord: string,
-    fundingCredit: string
+    contributorRecords: string[],
+    fundingCredits: string[],
+    finalizeCycle: boolean
 ): TransactionOptions {
+    if (contributorRecords.length !== fundingCredits.length) {
+        throw new Error("Run Payroll requires the same number of contributors and private balance records.");
+    }
+
+    if (contributorRecords.length < 1 || contributorRecords.length > 3) {
+        throw new Error("Run Payroll could not prepare the next payout set.");
+    }
+
+    const functionName =
+        contributorRecords.length === 1
+            ? "execute_payroll_batch_1"
+            : contributorRecords.length === 2
+                ? "execute_payroll_batch_2"
+                : "execute_payroll_batch_3";
+
     return {
         program: PROGRAM_ID,
-        function: "pay_contributor",
-        inputs: [payrollRecord, contributorRecord, fundingCredit],
-        fee: DEFAULT_FEE,
-        privateFee: false
+        function: functionName,
+        inputs: [...[payrollRecord, ...contributorRecords, ...fundingCredits], finalizeCycle ? "true" : "false"],
+        fee: contributorRecords.length === 3 ? DEFAULT_FEE * 2 : contributorRecords.length === 2 ? DEFAULT_FEE * 1.5 : DEFAULT_FEE,
+        privateFee: false,
     };
 }
 
-/**
- * Build transaction to batch-pay 2 contributors in a single transaction.
- * Each contributor needs its own funding credit (>= payout).
- */
-export function buildBatchPay2Transaction(
-    payrollRecord: string,
-    c1Record: string,
-    c2Record: string,
-    f1Credit: string,
-    f2Credit: string
-): TransactionOptions {
+export function buildCloseCycleTransaction(payrollRecord: string): TransactionOptions {
     return {
         program: PROGRAM_ID,
-        function: "batch_pay_2",
-        inputs: [payrollRecord, c1Record, c2Record, f1Credit, f2Credit],
-        fee: DEFAULT_FEE,
-        privateFee: false
-    };
-}
-
-/**
- * Build transaction to batch-pay 3 contributors in a single transaction.
- * Each contributor needs its own funding credit (>= payout).
- */
-export function buildBatchPay3Transaction(
-    payrollRecord: string,
-    c1Record: string,
-    c2Record: string,
-    c3Record: string,
-    f1Credit: string,
-    f2Credit: string,
-    f3Credit: string
-): TransactionOptions {
-    return {
-        program: PROGRAM_ID,
-        function: "batch_pay_3",
-        inputs: [payrollRecord, c1Record, c2Record, c3Record, f1Credit, f2Credit, f3Credit],
-        fee: DEFAULT_FEE,
-        privateFee: false
-    };
-}
-
-/**
- * Build transaction to disclose the spent budget
- * @param payrollRecord - The payroll record plaintext/ciphertext
- */
-export function buildDiscloseSpentTransaction(
-    payrollRecord: string
-): TransactionOptions {
-    return {
-        program: PROGRAM_ID,
-        function: "disclose_spent",
+        function: "close_cycle",
         inputs: [payrollRecord],
         fee: DEFAULT_FEE,
-        privateFee: false
+        privateFee: false,
     };
 }
 
-/**
- * Format microcredits to display credits
- */
+export function buildOpenNextCycleTransaction(payrollRecord: string): TransactionOptions {
+    return {
+        program: PROGRAM_ID,
+        function: "open_next_cycle",
+        inputs: [payrollRecord],
+        fee: DEFAULT_FEE,
+        privateFee: false,
+    };
+}
+
+export function buildDiscloseCycleSpentTransaction(payrollRecord: string): TransactionOptions {
+    return {
+        program: PROGRAM_ID,
+        function: "disclose_cycle_spent",
+        inputs: [payrollRecord],
+        fee: DEFAULT_FEE,
+        privateFee: false,
+    };
+}
+
+export function buildHandoffPayrollToManagerTransaction(payrollRecord: string): TransactionOptions {
+    return {
+        program: PROGRAM_ID,
+        function: "handoff_payroll_to_manager",
+        inputs: [payrollRecord],
+        fee: DEFAULT_FEE,
+        privateFee: false,
+    };
+}
+
+export function buildHandoffPayrollToOwnerTransaction(payrollRecord: string): TransactionOptions {
+    return {
+        program: PROGRAM_ID,
+        function: "handoff_payroll_to_owner",
+        inputs: [payrollRecord],
+        fee: DEFAULT_FEE,
+        privateFee: false,
+    };
+}
+
+export function buildTransferContributorOperatorTransaction(
+    contributorRecord: string,
+    newOwner: string
+): TransactionOptions {
+    return {
+        program: PROGRAM_ID,
+        function: "transfer_contributor_operator",
+        inputs: [contributorRecord, newOwner],
+        fee: DEFAULT_FEE,
+        privateFee: false,
+    };
+}
+
 export function formatCredits(microcredits: number): string {
     return (microcredits / 1_000_000).toFixed(6);
 }
 
-/**
- * Parse credits string to microcredits
- */
 export function parseCredits(credits: string): number {
     return Math.floor(parseFloat(credits) * 1_000_000);
 }
 
-/**
- * Format an Aleo address for display
- */
-export function formatAddress(address: string, chars: number = 6): string {
+export function formatUsd(cents: number): string {
+    return (cents / 100).toFixed(2);
+}
+
+export function parseUsdToCents(value: string): number {
+    return Math.round(parseFloat(value || "0") * 100);
+}
+
+export function formatRate(microcreditsPerUsdCent: number): string {
+    const creditsPerUsd = (microcreditsPerUsdCent * 100) / 1_000_000;
+    return creditsPerUsd.toFixed(6);
+}
+
+export function parseCreditsPerUsdToMicrocreditsPerCent(value: string): number {
+    return Math.round((parseFloat(value || "0") * 1_000_000) / 100);
+}
+
+export function formatAddress(address: string, chars = 6): string {
     if (!address) return "";
     return `${address.slice(0, chars)}...${address.slice(-4)}`;
+}
+
+export function generatePayrollId(): string {
+    const random = Math.floor(Math.random() * 10_000);
+    return `${Date.now()}${String(random).padStart(4, "0")}`;
 }

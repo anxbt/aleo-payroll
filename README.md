@@ -1,110 +1,57 @@
-# Confidential Payroll on Aleo
+# Confidential Payroll
 
-Privacy-preserving payroll coordination powered by Aleo records and zero-knowledge execution.
+Confidential Payroll is a private contributor payments app for DAOs and teams. It lets an owner define a USD-denominated payroll budget, set contributor payouts in USD, and run payroll privately without exposing salaries or treasury activity onchain.
+
+Designed for USD-denominated payroll (future integration with USDCX/USAD).
 
 [![Live App](https://img.shields.io/badge/Live%20App-Open-111827?logo=vercel&logoColor=white)](https://aleo-payroll-9vo6-git-main-anxbts-projects.vercel.app/)
 [![YouTube Demo](https://img.shields.io/badge/YouTube-Demo-FF0000?logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=GiL_80iWzkg)
 
-> Replace the two placeholder URLs above with your real links.
+## Core Use Case
 
-## Why This Project
-Traditional on-chain payroll leaks sensitive information:
-- Contributor identities
-- Payment amounts
-- Treasury allocation patterns
+Example: A DAO pays 5 contributors monthly without exposing salaries.
 
-Confidential Payroll enforces payroll rules without exposing private financial details.
+The same flow also supports:
+- grants and milestone payouts
+- contributor bounties
+- team payroll and working-group stipends
+- private treasury operations where payout visibility matters
 
-## What It Does
-- Create private payroll budgets
-- Register contributor payout commitments
-- Execute private payouts with deterministic checks
-- Support batch payout flows for multiple contributors
-- Optionally disclose aggregate spent amount
+## How It Works
 
-## Core Guarantees
-For every payout, the contract enforces:
-- Caller is payroll owner
-- Contributor belongs to payroll
-- Contributor is not already paid
-- Funding credit is sufficient
-- Budget constraints are respected
+- Create a payroll with a USD budget.
+- Lock a payroll-level USD Rate (Locked) for deterministic settlement.
+- Add contributors with one-time or recurring USD payouts.
+- Run Payroll to pay due contributors privately from available private balance.
+- Close the cycle and open the next one when recurring contributors remain.
 
-## System Architecture
+## Why USD Payroll
 
-```mermaid
-flowchart LR
-    A[Wallet: Private Credit Records] --> B[Payroll Contract]
-    B --> C[Payroll Record]
-    B --> D[Contributor Records]
-    B --> E[Payment Receipts]
-    B --> F[credits.aleo transfer_private]
-    F --> G[Recipient Private Credit]
-    F --> H[Owner Change Record]
-```
+- Budgets feel stable and easy to reason about for treasury operators.
+- Contributor payouts stay predictable even when credit prices move.
+- The contract enforces deterministic conversion using the payroll's locked rate.
+- The frontend only asks for USD amounts and hides low-level settlement mechanics.
 
-## Record Model
-Aleo uses record objects (UTXO-style), not a single mutable account balance.
+## Privacy Guarantees
 
-```mermaid
-flowchart TD
-    X[Wallet Credits] --> R1[Record: 20 credits]
-    X --> R2[Record: 10 credits]
-    X --> R3[Record: 5 credits]
-    R1 --> T[Transaction Input]
-    T --> C1[Payment Output]
-    T --> C2[Change Record]
-```
+- Contributor amounts are not broadcast as public transfers.
+- Treasury activity is not exposed as a public payroll table.
+- Aleo records and zero-knowledge execution enforce payroll rules privately.
+- The app syncs the latest private records directly from the connected wallet.
 
-This is why batch payout needs multiple funding records as inputs.
+## Role Model
 
-## Contract Workflow
+- Owner: creates payroll, defines contributors, sets payouts, and controls policy.
+- Manager: optional operator who can run payroll and move lifecycle actions forward after handoff.
+- The manager cannot change contributors or payout rules.
 
-```mermaid
-sequenceDiagram
-    participant O as Payroll Owner
-    participant P as Payroll Program
-    participant C as credits.aleo
+This separation signals DAO readiness while respecting Aleo's record ownership model.
 
-    O->>P: init_payroll(budget)
-    P-->>O: Payroll record
-
-    O->>P: add_contributor(payroll, addr, payout)
-    P-->>O: Updated payroll + Contributor record
-
-    O->>P: pay_contributor(..., funding_credit)
-    P->>C: transfer_private(funding_credit, contributor, payout)
-    C-->>O: Change record
-    P-->>O: Updated contributor + receipt
-```
-
-## Data Privacy Model
-### Private
-- Contributor identities (inside records)
-- Payout amounts
-- Funding credit records
-- Allocation order and internal state
-
-### Public
-- Transaction existence
-- Program execution metadata
-
-## Frontend Highlights
-- Wallet connect (Shield + Leo adapters)
-- Payroll dashboard with status and record refresh
-- Single payout and batch payout UX
-- Real-time transaction status polling
-
-## Known Constraints
-- Record-based funding means batch payouts need multiple spendable funding records
-- Wallet record decryption may require user approval depending on wallet permission mode
-- Testnet reliability can occasionally affect deployment/broadcast timing
-
-## Tech Stack
-- Leo (Aleo program)
-- Aleo testnet + credits.aleo
-- Next.js + TypeScript frontend
-- Provable wallet adapters
+## Demo Flow
+1. Create a payroll with a USD budget and USD Rate (Locked).
+2. Add contributors with recurring or one-time payouts.
+3. Click `Run Payroll`.
+4. Watch contributors move to paid state and the dashboard sync automatically.
 
 ## Repository Structure
 ```text
@@ -117,29 +64,47 @@ front-end/
   src/hooks/
   src/lib/
   src/types/
+
+scripts/
+  execute.ts
+  deploy.ts
 ```
 
 ## Local Development
-### 1) Contract
+
+### Contract
 ```bash
 cd contracts
 leo test
 ```
 
-### 2) Frontend
+### Frontend
 ```bash
 cd front-end
 pnpm install
 pnpm dev
 ```
 
-## Production Notes
-- Program currently deployed as `payroll_rishav_v3.aleo`
-- If function signatures change, deploy with a new program name (upgrade compatibility rules apply)
+### Helper Script
+```bash
+cd scripts
+npm install
+npx tsx execute.ts init <payroll_id> <budget_usd_cents> <microcredits_per_usd_cent> [manager]
+```
 
-## Use Cases Beyond Payroll
-- DAO contributor compensation
-- Grant disbursement
-- Bounty payouts
-- Research funding allocation
-- Private treasury operations
+## Verification
+- `cd contracts && leo test`
+- `cd front-end && pnpm build`
+
+## Why Aleo
+
+- Aleo gives the app private records for balances, payroll state, and contributor payouts.
+- Zero-knowledge execution lets the contract enforce budgets and payroll lifecycle without exposing amounts publicly.
+- This is what makes payroll, grants, and contributor compensation feel usable in a real treasury setting.
+
+## Real-World Applications
+
+- DAO core contributor payroll
+- grants and milestone disbursement
+- bounty payouts
+- team stipends and recurring contributor compensation

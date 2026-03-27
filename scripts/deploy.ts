@@ -1,23 +1,20 @@
 /**
  * Aleo Program Deployment Script
- * 
- * This script deploys the payrollsystem.aleo program to the Aleo Testnet
- * using the Provable SDK (similar to how Hardhat/Foundry works for EVM).
- * 
- * Key Concepts:
- * - Account: Uses your private key to sign transactions
- * - AleoKeyProvider: Caches proving/verifying keys (NOT your private key!)
- * - ProgramManager: Handles deployment and execution
- * - AleoNetworkClient: Communicates with Aleo nodes
+ *
+ * Deploys the compiled Aleo program to the Aleo Testnet using the Provable SDK.
+ *
+ * SDK 0.9.18 API notes:
+ *   - deploy(program, priorityFee, privateFee) — priorityFee is a TIP, not the base fee
+ *   - buildDeploymentTransaction() + submitTransaction() is more reliable
+ *   - The SDK calculates the base deployment fee automatically
  */
 
-import { 
-    Account, 
-    AleoNetworkClient, 
-    ProgramManager, 
+import {
+    Account,
+    AleoNetworkClient,
+    ProgramManager,
     AleoKeyProvider,
     initThreadPool,
-    ProgramManagerBase
 } from '@provablehq/sdk';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -31,9 +28,10 @@ const __dirname = path.dirname(__filename);
 // Configuration
 // ============================================
 
-const PRIVATE_KEY = "APrivateKey1zkp8X8TxoYtZFqyo34rxBubotDawenZkpPbfFDzkEHZWQRR";
-const NETWORK_URL = "https://api.explorer.provable.com/v1"; // Testnet endpoint
+const PRIVATE_KEY = process.env.ALEO_PRIVATE_KEY || "";
+const NETWORK_URL = process.env.ALEO_NETWORK_URL || "https://api.explorer.provable.com/v1";
 const PROGRAM_PATH = "../contracts/build/main.aleo";
+const DEPLOYMENT_RECORD_PATH = "../front-end/src/lib/deployment.ts";
 
 // ============================================
 // Main Deployment Function
@@ -44,6 +42,10 @@ async function deploy() {
     console.log("=".repeat(50));
 
     try {
+        if (!PRIVATE_KEY) {
+            throw new Error("Missing ALEO_PRIVATE_KEY environment variable");
+        }
+
         // Step 1: Initialize WebAssembly thread pool
         console.log("\n📦 Initializing WebAssembly...");
         await initThreadPool();
@@ -59,9 +61,7 @@ async function deploy() {
         const networkClient = new AleoNetworkClient(NETWORK_URL);
         console.log(`✅ Connected to: ${NETWORK_URL}`);
 
-        // Step 4: Initialize Key Provider (for caching proving/verifying keys)
-        // NOTE: This is different from your private key!
-        // AleoKeyProvider caches cryptographic keys needed to build proofs
+        // Step 4: Initialize Key Provider
         console.log("\n🔐 Setting up key provider...");
         const keyProvider = new AleoKeyProvider();
         keyProvider.useCache(true);
@@ -71,70 +71,64 @@ async function deploy() {
         console.log("\n📄 Loading program...");
         const programPath = path.resolve(__dirname, PROGRAM_PATH);
         const program = fs.readFileSync(programPath, 'utf8');
-        
-        // Extract program name
         const programNameMatch = program.match(/program\s+(\w+\.aleo)/);
         const programName = programNameMatch ? programNameMatch[1] : 'unknown';
         console.log(`✅ Loaded program: ${programName}`);
         console.log(`   Size: ${program.length} bytes`);
 
-        // Step 6: Estimate deployment fee
-        console.log("\n💰 Estimating deployment fee...");
-        const imports = await networkClient.getProgramImports(program);
-        const estimatedFee = ProgramManagerBase.estimateDeploymentFee(program, imports);
-        console.log(`✅ Estimated fee: ${estimatedFee} microcredits (${Number(estimatedFee) / 1_000_000} credits)`);
-
-        // Step 7: Check account balance
+        // Step 6: Check account balance
         console.log("\n💳 Checking account balance...");
         try {
-            // Get public balance
             const balance = await networkClient.getAccount(account.address().to_string());
             console.log(`✅ Account balance: ${JSON.stringify(balance)}`);
         } catch (e) {
             console.log("⚠️  Could not fetch balance (account may not have public credits)");
         }
 
-        // Step 8: Initialize Program Manager
+        // Step 7: Initialize Program Manager
         console.log("\n⚙️  Initializing Program Manager...");
         const programManager = new ProgramManager(NETWORK_URL, keyProvider);
         programManager.setAccount(account);
         console.log("✅ Program Manager ready");
 
-        // Step 9: Deploy the program
-        console.log("\n🚀 Deploying program to Aleo Testnet...");
-        console.log("   This may take several minutes...");
-        
-        // Set fee (in credits, not microcredits)
-        // Minimum fee is ~16.52 credits for this program
-        const feeInCredits = 20.0; // 20 credits for deployment (with buffer)
-        
-        const txId = await programManager.deploy(
+        // Step 8: Build deployment transaction
+        // NOTE: In SDK 0.9.18, the second parameter is "priorityFee" (a tip), NOT the base fee.
+        // The SDK calculates the actual deployment cost automatically.
+        const priorityFee = 0.0; // No additional tip needed
+        console.log("\n🚀 Building deployment transaction...");
+        console.log("   This may take several minutes (generating proofs for each function)...");
+        console.log(`   Priority fee: ${priorityFee} credits`);
+
+        const tx = await programManager.buildDeploymentTransaction(
             program,
-            feeInCredits,
-            false // Use public fee (set to true for private fee with record)
+            priorityFee,
+            false // Use public fee
         );
-        
-        console.log(`\n✅ Deployment transaction submitted!`);
+        console.log("✅ Deployment transaction built!");
+
+        // Step 9: Submit the transaction
+        console.log("\n📡 Submitting transaction to the network...");
+        const txId = await programManager.networkClient.submitTransaction(tx);
+        console.log(`✅ Transaction submitted!`);
         console.log(`   Transaction ID: ${txId}`);
 
         // Step 10: Wait for confirmation
         console.log("\n⏳ Waiting for confirmation...");
         let confirmed = false;
         let attempts = 0;
-        const maxAttempts = 60; // 5 minutes max wait
+        const maxAttempts = 60;
 
         while (!confirmed && attempts < maxAttempts) {
             try {
-                const tx = await networkClient.getTransaction(txId);
-                if (tx) {
+                const txResult = await networkClient.getTransaction(txId);
+                if (txResult) {
                     console.log(`\n✅ Transaction confirmed!`);
-                    console.log(`   Status: ${tx.status || 'confirmed'}`);
+                    console.log(`   Status: ${txResult.status || 'confirmed'}`);
                     confirmed = true;
                 }
             } catch (e) {
-                // Transaction not yet confirmed
                 process.stdout.write('.');
-                await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
+                await new Promise(resolve => setTimeout(resolve, 5000));
                 attempts++;
             }
         }
@@ -162,6 +156,12 @@ async function deploy() {
         console.log(`Explorer URL:    https://explorer.provable.com/transaction/${txId}`);
         console.log(`Program URL:     https://explorer.provable.com/program/${programName}`);
         console.log("=".repeat(50));
+
+        // Write deployment record for front-end
+        const deploymentRecordPath = path.resolve(__dirname, DEPLOYMENT_RECORD_PATH);
+        const deploymentRecord = `export const DEPLOYED_PROGRAM_ID = "${programName}";\nexport const DEPLOYMENT_TRANSACTION_ID = "${txId}";\nexport const DEPLOYMENT_NETWORK_URL = "${NETWORK_URL}";\nexport const DEPLOYMENT_EXPLORER_URL = "https://explorer.provable.com/transaction/${txId}";\n`;
+        fs.writeFileSync(deploymentRecordPath, deploymentRecord, "utf8");
+        console.log(`✅ Wrote deployment record to ${deploymentRecordPath}`);
 
     } catch (error) {
         console.error("\n❌ Deployment failed!");

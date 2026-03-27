@@ -1,18 +1,134 @@
-"use client"
+"use client";
 
-import * as React from "react"
-import { CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
+import * as React from "react";
+import { CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { SpotlightCard } from "@/components/animations/spotlight-card";
 import { FadeIn } from "@/components/animations/fade-in";
 import { DecryptedText } from "@/components/animations/decrypted-text";
-import { Send, Users, Wallet, Plus, CreditCard, Play } from "lucide-react";
+import {
+    AlertTriangle,
+    ArrowRightLeft,
+    CreditCard,
+    DollarSign,
+    FolderSync,
+    Play,
+    Plus,
+    Users,
+} from "lucide-react";
 import { usePayrollContract } from "@/hooks/usePayroll";
-import type { CreditRecord, PayrollRecord, ContributorRecord } from "@/types/aleo";
+import {
+    formatAddress,
+    formatCredits,
+    formatRate,
+    formatUsd,
+    generatePayrollId,
+    parseCreditsPerUsdToMicrocreditsPerCent,
+    parseUsdToCents,
+} from "@/lib/aleo-service";
+import {
+    DEPLOYED_PROGRAM_ID,
+    DEPLOYMENT_EXPLORER_URL,
+    DEPLOYMENT_NETWORK_URL,
+} from "@/lib/deployment";
+import type { ContributorRecord, CreditRecord, PayrollRecord } from "@/types/aleo";
 
-type TransactionStatus = "idle" | "pending" | "proving" | "broadcasting" | "success" | "error"
+type ActionState = "idle" | "pending" | "proving" | "success" | "error";
+
+type SyncSnapshot = {
+    credits: CreditRecord[];
+    payrolls: PayrollRecord[];
+    contributors: ContributorRecord[];
+};
+
+type ExecutionPlan = {
+    contributors: ContributorRecord[];
+    credits: CreditRecord[];
+};
+
+function statusLabel(status: number): "OPEN" | "EXECUTED" | "CLOSED" {
+    if (status === 1) return "EXECUTED";
+    if (status === 2) return "CLOSED";
+    return "OPEN";
+}
+
+function statusTone(status: number): "success" | "pending" | "neutral" {
+    if (status === 1) return "success";
+    if (status === 2) return "neutral";
+    return "pending";
+}
+
+function contributorIsDue(contributor: ContributorRecord, payroll: PayrollRecord): boolean {
+    return contributor.payroll_id === payroll.payroll_id && contributor.active && contributor.last_paid_cycle < payroll.cycle_index;
+}
+
+function contributorPaidThisCycle(contributor: ContributorRecord, payroll: PayrollRecord): boolean {
+    return contributor.payroll_id === payroll.payroll_id && contributor.last_paid_cycle === payroll.cycle_index;
+}
+
+function sumPayoutUsdCents(contributors: ContributorRecord[]): number {
+    return contributors.reduce((total, contributor) => total + contributor.payout_usd_cents, 0);
+}
+
+function requiredMicrocredits(contributor: ContributorRecord, payroll: PayrollRecord): number {
+    return contributor.payout_usd_cents * payroll.microcredits_per_usd_cent;
+}
+
+function combinations<T>(items: T[], size: number): T[][] {
+    if (size === 0) return [[]];
+    if (items.length < size) return [];
+    if (size === 1) return items.map((item) => [item]);
+
+    const output: T[][] = [];
+    items.forEach((item, index) => {
+        const rest = combinations(items.slice(index + 1), size - 1);
+        rest.forEach((combo) => output.push([item, ...combo]));
+    });
+    return output;
+}
+
+function allocatePrivateBalance(
+    contributors: ContributorRecord[],
+    credits: CreditRecord[],
+    payroll: PayrollRecord
+): ExecutionPlan | null {
+    const sortedCredits = [...credits].sort((a, b) => a.microcredits - b.microcredits);
+    const sortedContributors = [...contributors].sort((a, b) => b.payout_usd_cents - a.payout_usd_cents);
+    const selectedCredits: CreditRecord[] = [];
+
+    for (const contributor of sortedContributors) {
+        const needed = requiredMicrocredits(contributor, payroll);
+        const creditIndex = sortedCredits.findIndex((credit) => credit.microcredits >= needed);
+        if (creditIndex === -1) return null;
+        selectedCredits.push(sortedCredits.splice(creditIndex, 1)[0]);
+    }
+
+    return {
+        contributors: sortedContributors,
+        credits: selectedCredits,
+    };
+}
+
+function findNextExecutionPlan(
+    contributors: ContributorRecord[],
+    credits: CreditRecord[],
+    payroll: PayrollRecord
+): ExecutionPlan | null {
+    const orderedContributors = [...contributors].sort((a, b) => b.payout_usd_cents - a.payout_usd_cents);
+
+    for (const size of [3, 2, 1]) {
+        if (orderedContributors.length < size) continue;
+        const executionCombos = combinations(orderedContributors, size);
+        for (const combo of executionCombos) {
+            const allocation = allocatePrivateBalance(combo, credits, payroll);
+            if (allocation) return allocation;
+        }
+    }
+
+    return null;
+}
 
 export default function DashboardContent() {
     const {
@@ -22,359 +138,374 @@ export default function DashboardContent() {
         error,
         initPayroll,
         addContributor,
-        payContributor,
-        batchPayContributors,
-        discloseSpent,
+        runPayroll,
+        closeCycle,
+        openNextCycle,
+        handoffPayrollToManager,
+        handoffPayrollToOwner,
+        transferContributorOperator,
         getCreditRecords,
         getPayrollRecords,
         getContributorRecords,
+        getPaymentReceipts,
+        getCycleSummaries,
         pollTransactionStatus,
     } = usePayrollContract();
 
-    // Credit records
     const [credits, setCredits] = React.useState<CreditRecord[]>([]);
-    const [creditsLoading, setCreditsLoading] = React.useState(false);
-    const [creditsError, setCreditsError] = React.useState<string | null>(null);
-    
-    // Payroll & contributor records
     const [payrolls, setPayrolls] = React.useState<PayrollRecord[]>([]);
     const [contributors, setContributors] = React.useState<ContributorRecord[]>([]);
-    
-    // ---- Separate selection state per card (fixes shared-state bug) ----
-    // Init Payroll
-    const [initBudget, setInitBudget] = React.useState("");
-    
-    // Add Contributor
-    const [addPayrollId, setAddPayrollId] = React.useState("");
-    const [contributorAddress, setContributorAddress] = React.useState("");
-    const [payoutAmount, setPayoutAmount] = React.useState("");
-    const [addError, setAddError] = React.useState<string | null>(null);
-    
-    // Pay Single Contributor
-    const [payPayrollId, setPayPayrollId] = React.useState("");
-    const [payContributorId, setPayContributorId] = React.useState("");
-    const [payFundingCreditId, setPayFundingCreditId] = React.useState("");
-    
-    // Batch Pay
-    const [batchPayrollId, setBatchPayrollId] = React.useState("");
-    const [batchSelections, setBatchSelections] = React.useState<Record<string, boolean>>({});
-    const [batchFunding, setBatchFunding] = React.useState<Record<string, string>>({});
-    
-    // Disclose
-    const [disclosePayrollId, setDisclosePayrollId] = React.useState("");
-    
-    // Transaction error detail
+    const [selectedPayrollKey, setSelectedPayrollKey] = React.useState("");
+    const [syncing, setSyncing] = React.useState(false);
+    const [lastSyncedAt, setLastSyncedAt] = React.useState<Date | null>(null);
     const [txError, setTxError] = React.useState<string | null>(null);
-    
-    // Transaction states
-    const [initStatus, setInitStatus] = React.useState<TransactionStatus>("idle");
-    const [addContributorStatus, setAddContributorStatus] = React.useState<TransactionStatus>("idle");
-    const [payStatus, setPayStatus] = React.useState<TransactionStatus>("idle");
-    const [batchPayStatus, setBatchPayStatus] = React.useState<TransactionStatus>("idle");
-    const [discloseStatus, setDiscloseStatus] = React.useState<TransactionStatus>("idle");
-    
-    // Load all records on mount and when wallet connects
+    const [actionState, setActionState] = React.useState<ActionState>("idle");
+    const [actionLabel, setActionLabel] = React.useState("");
+
+    const [budgetUsd, setBudgetUsd] = React.useState("");
+    const [rateCreditsPerUsd, setRateCreditsPerUsd] = React.useState("");
+    const [managerAddress, setManagerAddress] = React.useState("");
+
+    const [contributorAddress, setContributorAddress] = React.useState("");
+    const [payoutUsd, setPayoutUsd] = React.useState("");
+    const [recurring, setRecurring] = React.useState(false);
+
+    const txBusy = actionState === "pending" || actionState === "proving";
+
+    const syncAllRecords = React.useCallback(async (): Promise<SyncSnapshot> => {
+        setSyncing(true);
+        try {
+            const [creditRecords, payrollRecords, contributorRecords] = await Promise.all([
+                getCreditRecords(),
+                getPayrollRecords(),
+                getContributorRecords(),
+                getPaymentReceipts(),
+                getCycleSummaries(),
+            ]);
+
+            setCredits(creditRecords);
+            setPayrolls(payrollRecords);
+            setContributors(contributorRecords);
+            setLastSyncedAt(new Date());
+
+            return {
+                credits: creditRecords,
+                payrolls: payrollRecords,
+                contributors: contributorRecords,
+            };
+        } finally {
+            setSyncing(false);
+        }
+    }, [getContributorRecords, getCreditRecords, getCycleSummaries, getPaymentReceipts, getPayrollRecords]);
+
     React.useEffect(() => {
         if (connected) {
-            loadCredits();
-            loadPayrolls();
-            loadContributors();
+            void syncAllRecords();
         }
-    }, [connected]);
+    }, [connected, syncAllRecords]);
 
-    const refreshAllRecords = async () => {
-        await Promise.all([loadCredits(), loadPayrolls(), loadContributors()]);
-    };
-
-    const loadCredits = async () => {
-        setCreditsLoading(true);
-        setCreditsError(null);
-        try {
-            const records = await getCreditRecords();
-            setCredits(records);
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error("Failed to load credits:", err);
-            setCreditsError(msg);
-        } finally {
-            setCreditsLoading(false);
-        }
-    };
-
-    const loadPayrolls = async () => {
-        try {
-            const records = await getPayrollRecords();
-            setPayrolls(records);
-        } catch (err) {
-            console.error("Failed to load payrolls:", err);
-        }
-    };
-
-    const loadContributors = async () => {
-        try {
-            const records = await getContributorRecords();
-            setContributors(records);
-        } catch (err) {
-            console.error("Failed to load contributors:", err);
-        }
-    };
-
-    // ---- Derived state ----
-    const addPayroll = payrolls.find(p => p.id === addPayrollId) || null;
-    const payPayroll = payrolls.find(p => p.id === payPayrollId) || null;
-    const batchPayroll = payrolls.find(p => p.id === batchPayrollId) || null;
-    const disclosePayroll = payrolls.find(p => p.id === disclosePayrollId) || null;
-    
-    // Contributors for single-pay card (unpaid only)
-    const payContributors = React.useMemo(() => {
-        if (!payPayroll) return [];
-        return contributors.filter(c => c.payroll_owner === payPayroll.owner && !c.paid);
-    }, [contributors, payPayroll]);
-    
-    const selectedPayContributor = payContributors.find(c => c.id === payContributorId) || null;
-    
-    // Sufficient credits for a given payout
-    const getSufficientCredits = (payoutAmount: number) => {
-        return credits.filter(c => c.microcredits >= payoutAmount);
-    };
-    
-    // Contributors for batch pay (unpaid only)
-    const batchContributors = React.useMemo(() => {
-        if (!batchPayroll) return [];
-        return contributors.filter(c => c.payroll_owner === batchPayroll.owner && !c.paid);
-    }, [contributors, batchPayroll]);
-    
-    const selectedBatchContributors = batchContributors.filter(c => batchSelections[c.id]);
-
-    // ============ Handlers ============
-
-    // Initialize payroll — just a budget number, no credits consumed
-    const handleInitPayroll = async () => {
-        const budgetCredits = parseFloat(initBudget);
-        if (!budgetCredits || budgetCredits <= 0) return;
-        
-        const budgetMicrocredits = Math.floor(budgetCredits * 1_000_000);
-        
-        setInitStatus("pending");
-        setTxError(null);
-        try {
-            const txId = await initPayroll(budgetMicrocredits);
-            setInitStatus("proving");
-            
-            const result = await pollTransactionStatus(txId);
-            
-            if (result.finalized) {
-                setInitStatus("success");
-                setInitBudget("");
-                await loadPayrolls();
-                setTimeout(() => setInitStatus("idle"), 3000);
-            } else {
-                setInitStatus("error");
-                setTimeout(() => setInitStatus("idle"), 5000);
-            }
-        } catch (err) {
-            console.error("Init payroll failed:", err);
-            const msg = err instanceof Error ? err.message : String(err);
-            setTxError(msg);
-            setInitStatus("error");
-            setTimeout(() => setInitStatus("idle"), 5000);
-        }
-    };
-
-    // Add contributor
-    const handleAddContributor = async () => {
-        if (!addPayroll || !contributorAddress || !payoutAmount) return;
-        
-        const payoutMicrocredits = Math.floor(parseFloat(payoutAmount) * 1_000_000);
-        
-        // Inline validation (no alert)
-        if (payoutMicrocredits > (addPayroll.remaining_budget || 0)) {
-            setAddError("Payout exceeds remaining payroll budget");
+    React.useEffect(() => {
+        if (!selectedPayrollKey && payrolls.length > 0) {
+            setSelectedPayrollKey(payrolls[0].payroll_id);
             return;
         }
-        
-        setAddContributorStatus("pending");
-        setAddError(null);
+
+        if (selectedPayrollKey && !payrolls.some((payroll) => payroll.payroll_id === selectedPayrollKey)) {
+            setSelectedPayrollKey(payrolls[0]?.payroll_id || "");
+        }
+    }, [payrolls, selectedPayrollKey]);
+
+    const selectedPayroll = React.useMemo(
+        () => payrolls.find((payroll) => payroll.payroll_id === selectedPayrollKey) || null,
+        [payrolls, selectedPayrollKey]
+    );
+
+    const payrollContributors = React.useMemo(() => {
+        if (!selectedPayroll) return [];
+        return contributors.filter((contributor) => contributor.payroll_id === selectedPayroll.payroll_id);
+    }, [contributors, selectedPayroll]);
+
+    const dueContributors = React.useMemo(() => {
+        if (!selectedPayroll) return [];
+        return payrollContributors.filter((contributor) => contributorIsDue(contributor, selectedPayroll));
+    }, [payrollContributors, selectedPayroll]);
+
+    const paidThisCycle = React.useMemo(() => {
+        if (!selectedPayroll) return [];
+        return payrollContributors.filter((contributor) => contributorPaidThisCycle(contributor, selectedPayroll));
+    }, [payrollContributors, selectedPayroll]);
+
+    const cycleRequiredMicrocredits = React.useMemo(() => {
+        if (!selectedPayroll) return 0;
+        return selectedPayroll.remaining_cycle_usd_cents * selectedPayroll.microcredits_per_usd_cent;
+    }, [selectedPayroll]);
+
+    const availableMicrocredits = React.useMemo(
+        () => credits.reduce((total, credit) => total + credit.microcredits, 0),
+        [credits]
+    );
+
+    const managerConfigured = !!selectedPayroll && selectedPayroll.manager && selectedPayroll.manager !== selectedPayroll.treasury_owner;
+    const canEditPayrollPolicy = !!selectedPayroll && selectedPayroll.owner === selectedPayroll.treasury_owner && address === selectedPayroll.owner;
+    const canOperatePayroll = !!selectedPayroll && address === selectedPayroll.owner;
+
+    const unpaidContributorCount = React.useMemo(
+        () => contributors.filter((contributor) => {
+            const payroll = payrolls.find((item) => item.payroll_id === contributor.payroll_id);
+            return payroll ? contributorIsDue(contributor, payroll) : false;
+        }).length,
+        [contributors, payrolls]
+    );
+
+    const runTx = React.useCallback(async (
+        label: string,
+        exec: () => Promise<string>,
+        options?: {
+            maxAttempts?: number;
+            interval?: number;
+            allowTimeoutAsPending?: boolean;
+        }
+    ) => {
+        setActionLabel(label);
+        setActionState("pending");
         setTxError(null);
+
         try {
-            const txId = await addContributor(
-                addPayroll.plaintext || addPayroll.ciphertext,
-                contributorAddress,
-                payoutMicrocredits
+            const txId = await exec();
+            setActionState("proving");
+            const result = await pollTransactionStatus(
+                txId,
+                options?.maxAttempts ?? 60,
+                options?.interval ?? 2000
             );
-            setAddContributorStatus("proving");
-            
-            const result = await pollTransactionStatus(txId);
-            
-            if (result.finalized) {
-                setAddContributorStatus("success");
-                await loadPayrolls();
-                await loadContributors();
-                setAddPayrollId("");
-                setContributorAddress("");
-                setPayoutAmount("");
-                setTimeout(() => setAddContributorStatus("idle"), 3000);
-            } else {
-                setAddContributorStatus("error");
-                setTimeout(() => setAddContributorStatus("idle"), 5000);
+
+            if (!result.finalized && result.status === "Timeout" && options?.allowTimeoutAsPending) {
+                setActionState("pending");
+                setTxError(`${label} is still pending on Aleo. Tx: ${result.onChainId || txId}. Wait a bit and click Sync with Wallet.`);
+                return { ...result, txId };
             }
+
+            if (!result.finalized) {
+                throw new Error(`${label} was not finalized (${result.status}). Tx: ${result.onChainId || txId}`);
+            }
+            setActionState("success");
+            return { ...result, txId };
         } catch (err) {
-            console.error("Add contributor failed:", err);
-            const msg = err instanceof Error ? err.message : String(err);
-            setTxError(msg);
-            setAddContributorStatus("error");
-            await refreshAllRecords();
-            setTimeout(() => setAddContributorStatus("idle"), 5000);
+            const message = err instanceof Error ? err.message : String(err);
+            setTxError(message);
+            setActionState("error");
+            throw err;
+        }
+    }, [pollTransactionStatus]);
+
+    const resetActionState = React.useCallback(() => {
+        window.setTimeout(() => {
+            setActionState("idle");
+            setActionLabel("");
+        }, 2500);
+    }, []);
+
+    const handleCreatePayroll = async () => {
+        if (!address) return;
+
+        const budgetUsdCents = parseUsdToCents(budgetUsd);
+        const microcreditsPerUsdCent = parseCreditsPerUsdToMicrocreditsPerCent(rateCreditsPerUsd);
+        if (budgetUsdCents <= 0 || microcreditsPerUsdCent <= 0) return;
+
+        const payrollId = generatePayrollId();
+        const manager = managerAddress.trim() || address;
+
+        try {
+            await runTx("Creating payroll", () => initPayroll(payrollId, budgetUsdCents, microcreditsPerUsdCent, manager));
+            const snapshot = await syncAllRecords();
+            const created = snapshot.payrolls.find((payroll) => payroll.payroll_id === payrollId);
+            if (created) setSelectedPayrollKey(created.payroll_id);
+            setBudgetUsd("");
+            setRateCreditsPerUsd("");
+            setManagerAddress("");
+        } finally {
+            resetActionState();
         }
     };
 
-    // Pay single contributor — funding credit >= payout
-    const handlePayContributor = async () => {
-        if (!payPayroll || !selectedPayContributor || !payFundingCreditId) return;
-        
-        const fundingCredit = credits.find(c => c.id === payFundingCreditId);
-        if (!fundingCredit) return;
-        
-        setPayStatus("pending");
-        setTxError(null);
+    const handleAddContributor = async () => {
+        if (!selectedPayroll) return;
+
+        const payoutUsdCents = parseUsdToCents(payoutUsd);
+        if (!contributorAddress.trim() || payoutUsdCents <= 0) return;
+
         try {
-            const txId = await payContributor(
-                payPayroll.plaintext || payPayroll.ciphertext,
-                selectedPayContributor.plaintext || selectedPayContributor.ciphertext,
-                fundingCredit.plaintext || fundingCredit.ciphertext
+            // Refresh records first so we don't submit with a stale payroll record.
+            const snapshot = await syncAllRecords();
+            const latestPayroll = snapshot.payrolls.find((item) => item.payroll_id === selectedPayroll.payroll_id);
+
+            if (!latestPayroll) {
+                setTxError("Selected payroll could not be refreshed from the wallet.");
+                return;
+            }
+
+            const canEditLatestPayrollPolicy =
+                latestPayroll.owner === latestPayroll.treasury_owner && address === latestPayroll.owner;
+
+            if (!canEditLatestPayrollPolicy) {
+                setTxError("Only the payroll owner can change contributors or payouts.");
+                return;
+            }
+
+            if (latestPayroll.status !== 0) {
+                setTxError("Contributors can only be added while the cycle is OPEN.");
+                return;
+            }
+
+            if (latestPayroll.active_commitment_usd_cents + payoutUsdCents > latestPayroll.budget_usd_cents) {
+                setTxError("This payout would exceed the payroll budget.");
+                return;
+            }
+
+            await runTx("Adding contributor", () => addContributor(
+                latestPayroll.plaintext || latestPayroll.ciphertext,
+                contributorAddress.trim(),
+                payoutUsdCents,
+                recurring
+            ));
+            await syncAllRecords();
+            setContributorAddress("");
+            setPayoutUsd("");
+            setRecurring(false);
+        } catch {
+            // runTx already sets user-facing error state; avoid uncaught promise logs.
+        } finally {
+            resetActionState();
+        }
+    };
+
+    const handleRunPayroll = async () => {
+        if (!selectedPayroll) return;
+        if (!canOperatePayroll) {
+            setTxError("Only the active operator can run this payroll.");
+            return;
+        }
+        if (selectedPayroll.status !== 0) {
+            setTxError("Only OPEN payroll cycles can be executed.");
+            return;
+        }
+
+        let snapshot = await syncAllRecords();
+        let payroll = snapshot.payrolls.find((item) => item.payroll_id === selectedPayroll.payroll_id) || null;
+        if (!payroll) {
+            setTxError("Selected payroll could not be refreshed from the wallet.");
+            return;
+        }
+
+        try {
+            while (payroll && payroll.status === 0) {
+                const currentPayroll = payroll;
+                const remainingContributors = snapshot.contributors.filter((contributor) => contributorIsDue(contributor, currentPayroll));
+                if (remainingContributors.length === 0) break;
+
+                const executionPlan = findNextExecutionPlan(remainingContributors, snapshot.credits, currentPayroll);
+                if (!executionPlan) {
+                    throw new Error("Available private balance records cannot cover the remaining private payouts. Sync with Wallet after funding the operator wallet.");
+                }
+
+                const executionUsdTotal = sumPayoutUsdCents(executionPlan.contributors);
+                const finalizeCycle = currentPayroll.spent_usd_cents + executionUsdTotal === currentPayroll.cycle_due_usd_cents;
+
+                const runResult = await runTx(
+                    "Running payroll",
+                    () => runPayroll(
+                        currentPayroll.plaintext || currentPayroll.ciphertext,
+                        executionPlan.contributors.map((contributor) => contributor.plaintext || contributor.ciphertext),
+                        executionPlan.credits.map((credit) => credit.plaintext || credit.ciphertext),
+                        finalizeCycle
+                    ),
+                    {
+                        // Running payroll can take much longer than simpler transitions.
+                        maxAttempts: 180,
+                        interval: 2000,
+                        allowTimeoutAsPending: true,
+                    }
+                );
+
+                if (!runResult.finalized) {
+                    break;
+                }
+
+                snapshot = await syncAllRecords();
+                payroll = snapshot.payrolls.find((item) => item.payroll_id === selectedPayroll.payroll_id) || null;
+            }
+        } catch {
+            // runTx already sets user-facing error state; avoid uncaught promise logs.
+        } finally {
+            resetActionState();
+        }
+    };
+
+    const handleCloseCycle = async () => {
+        if (!selectedPayroll) return;
+        try {
+            await runTx("Closing cycle", () => closeCycle(selectedPayroll.plaintext || selectedPayroll.ciphertext));
+            await syncAllRecords();
+        } finally {
+            resetActionState();
+        }
+    };
+
+    const handleOpenNextCycle = async () => {
+        if (!selectedPayroll) return;
+        try {
+            await runTx("Opening next cycle", () => openNextCycle(selectedPayroll.plaintext || selectedPayroll.ciphertext));
+            await syncAllRecords();
+        } finally {
+            resetActionState();
+        }
+    };
+
+    const handleOperatorHandoff = async () => {
+        if (!selectedPayroll) return;
+
+        const toManager = selectedPayroll.owner === selectedPayroll.treasury_owner;
+        const nextOperator = toManager ? selectedPayroll.manager : selectedPayroll.treasury_owner;
+        if (!nextOperator || nextOperator === selectedPayroll.treasury_owner && toManager) {
+            setTxError("Configure a distinct manager before delegating payroll operations.");
+            return;
+        }
+
+        const relevantContributors = payrollContributors.filter((contributor) => contributor.owner === selectedPayroll.owner);
+
+        try {
+            for (const contributor of relevantContributors) {
+                await runTx("Handing off contributor access", () => transferContributorOperator(
+                    contributor.plaintext || contributor.ciphertext,
+                    nextOperator
+                ));
+            }
+
+            await runTx(
+                toManager ? "Delegating payroll to manager" : "Returning payroll to owner",
+                () => toManager
+                    ? handoffPayrollToManager(selectedPayroll.plaintext || selectedPayroll.ciphertext)
+                    : handoffPayrollToOwner(selectedPayroll.plaintext || selectedPayroll.ciphertext)
             );
-            setPayStatus("proving");
-            
-            const result = await pollTransactionStatus(txId);
-            
-            if (result.finalized) {
-                setPayStatus("success");
-                await refreshAllRecords();
-                setPayContributorId("");
-                setPayFundingCreditId("");
-                setTimeout(() => setPayStatus("idle"), 3000);
-            } else {
-                setPayStatus("error");
-                setTimeout(() => setPayStatus("idle"), 5000);
-            }
-        } catch (err) {
-            console.error("Pay contributor failed:", err);
-            const msg = err instanceof Error ? err.message : String(err);
-            setTxError(msg);
-            setPayStatus("error");
-            await refreshAllRecords();
-            setTimeout(() => setPayStatus("idle"), 5000);
+
+            await syncAllRecords();
+        } finally {
+            resetActionState();
         }
     };
 
-    // Batch pay 2-3 contributors
-    const handleBatchPay = async () => {
-        if (!batchPayroll || selectedBatchContributors.length < 2 || selectedBatchContributors.length > 3) return;
-        
-        // Validate all have funding credits assigned
-        const contributorRecords: string[] = [];
-        const fundingRecords: string[] = [];
-        
-        for (const c of selectedBatchContributors) {
-            const creditId = batchFunding[c.id];
-            if (!creditId) return;
-            const credit = credits.find(cr => cr.id === creditId);
-            if (!credit) return;
-            contributorRecords.push(c.plaintext || c.ciphertext);
-            fundingRecords.push(credit.plaintext || credit.ciphertext);
-        }
-        
-        setBatchPayStatus("pending");
-        setTxError(null);
-        try {
-            const txId = await batchPayContributors(
-                batchPayroll.plaintext || batchPayroll.ciphertext,
-                contributorRecords,
-                fundingRecords
-            );
-            setBatchPayStatus("proving");
-            
-            const result = await pollTransactionStatus(txId);
-            
-            if (result.finalized) {
-                setBatchPayStatus("success");
-                await refreshAllRecords();
-                setBatchSelections({});
-                setBatchFunding({});
-                setTimeout(() => setBatchPayStatus("idle"), 3000);
-            } else {
-                setBatchPayStatus("error");
-                setTimeout(() => setBatchPayStatus("idle"), 5000);
-            }
-        } catch (err) {
-            console.error("Batch pay failed:", err);
-            const msg = err instanceof Error ? err.message : String(err);
-            setTxError(msg);
-            setBatchPayStatus("error");
-            await refreshAllRecords();
-            setTimeout(() => setBatchPayStatus("idle"), 5000);
-        }
-    };
-
-    // Disclose spent budget
-    const handleDiscloseSpent = async () => {
-        if (!disclosePayroll) return;
-        
-        setDiscloseStatus("pending");
-        setTxError(null);
-        try {
-            const txId = await discloseSpent(disclosePayroll.plaintext || disclosePayroll.ciphertext);
-            setDiscloseStatus("proving");
-            
-            const result = await pollTransactionStatus(txId);
-            
-            if (result.finalized) {
-                setDiscloseStatus("success");
-                setTimeout(() => setDiscloseStatus("idle"), 3000);
-            } else {
-                setDiscloseStatus("error");
-                setTimeout(() => setDiscloseStatus("idle"), 5000);
-            }
-        } catch (err) {
-            console.error("Disclose spent failed:", err);
-            const msg = err instanceof Error ? err.message : String(err);
-            setTxError(msg);
-            setDiscloseStatus("error");
-            await refreshAllRecords();
-            setTimeout(() => setDiscloseStatus("idle"), 5000);
-        }
-    };
-
-    // Toggle batch contributor selection
-    const toggleBatchSelection = (id: string) => {
-        setBatchSelections(prev => {
-            const next = { ...prev };
-            if (next[id]) {
-                delete next[id];
-                // Also clear funding for this contributor
-                setBatchFunding(f => {
-                    const nf = { ...f };
-                    delete nf[id];
-                    return nf;
-                });
-            } else {
-                // Max 3 selected
-                const currentCount = Object.keys(next).length;
-                if (currentCount >= 3) return prev;
-                next[id] = true;
-            }
-            return next;
-        });
-    };
+    const nextExecutionPlan = selectedPayroll ? findNextExecutionPlan(dueContributors, credits, selectedPayroll) : null;
 
     if (!connected) {
         return (
             <div className="flex min-h-[60vh] items-center justify-center">
                 <FadeIn>
                     <div className="text-center space-y-4">
-                        <Wallet className="h-12 w-12 text-accent mx-auto" />
+                        <CreditCard className="h-12 w-12 text-accent mx-auto" />
                         <h2 className="text-xl font-semibold">Connect Your Wallet</h2>
-                        <p className="text-text-secondary">Connect your Shield or Leo wallet to manage payrolls</p>
+                        <p className="text-text-secondary">
+                            Connect Shield or Leo to run private contributor payments for DAOs and teams.
+                        </p>
                     </div>
                 </FadeIn>
             </div>
@@ -384,498 +515,528 @@ export default function DashboardContent() {
     return (
         <div className="space-y-8">
             <FadeIn>
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
                     <div>
                         <h1 className="text-2xl font-semibold tracking-tight">
-                            <DecryptedText text="Payroll Dashboard" speed={40} />
+                            <DecryptedText text="Private Contributor Payments for DAOs and Teams" speed={36} />
                         </h1>
-                        <p className="text-text-secondary">Manage private payrolls with zero-knowledge proofs</p>
+                        <p className="text-text-secondary">
+                            Define a USD-denominated budget, set contributor payouts in USD, and run payroll privately without exposing salaries or treasury activity.
+                        </p>
+                        <p className="mt-2 text-sm text-text-secondary">
+                            Designed for USD-denominated payroll (future integration with USDCX/USAD). Example: A DAO pays 5 contributors monthly without exposing salaries.
+                        </p>
                     </div>
-                    <Button 
-                        variant="outline" 
-                        onClick={refreshAllRecords} 
-                        disabled={isLoading || creditsLoading}
-                        className="flex items-center gap-2"
-                    >
-                        <svg className={`h-4 w-4 ${(isLoading || creditsLoading) ? 'animate-spin' : ''}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                        </svg>
-                        Refresh All
-                    </Button>
+                    <div className="flex flex-col items-start gap-2 md:items-end">
+                        <Button
+                            variant="outline"
+                            onClick={() => { void syncAllRecords(); }}
+                            disabled={syncing || txBusy || isLoading}
+                            className="flex items-center gap-2"
+                        >
+                            <FolderSync className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
+                            Sync with Wallet
+                        </Button>
+                        <p className="text-xs text-text-secondary">
+                            Fetch the latest private records from your wallet before or after payroll activity.
+                        </p>
+                    </div>
                 </div>
             </FadeIn>
 
-            {/* Quick Stats Bar */}
-            <FadeIn delay={0.05}>
-                <div className="grid grid-cols-3 gap-4 p-4 bg-surface/30 rounded-lg border border-border">
-                    <div className="text-center">
-                        <p className="text-2xl font-semibold">{payrolls.length}</p>
-                        <p className="text-xs text-text-secondary">Payrolls</p>
-                    </div>
-                    <div className="text-center">
-                        <p className="text-2xl font-semibold">{contributors.filter(c => !c.paid).length}</p>
-                        <p className="text-xs text-text-secondary">Unpaid Contributors</p>
-                    </div>
-                    <div className="text-center">
-                        <p className="text-2xl font-semibold">{credits.length}</p>
-                        <p className="text-xs text-text-secondary">Credit Records</p>
-                    </div>
+            <FadeIn delay={0.03}>
+                <div className="rounded-xl border border-border bg-surface/20 p-4">
+                    <p className="text-xs uppercase tracking-[0.16em] text-text-secondary">Live Deployment</p>
+                    <p className="mt-2 text-sm font-medium break-all">{DEPLOYED_PROGRAM_ID}</p>
+                    <p className="mt-1 text-xs text-text-secondary break-all">Network: {DEPLOYMENT_NETWORK_URL}</p>
+                    <a
+                        href={DEPLOYMENT_EXPLORER_URL}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 inline-flex items-center gap-1 text-xs text-accent hover:underline"
+                    >
+                        View deployment transaction
+                    </a>
                 </div>
             </FadeIn>
 
             {(error || txError) && (
                 <FadeIn>
-                    <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
-                        <p className="text-red-400 text-sm font-medium">{error || txError}</p>
-                        {txError && txError.includes("already exists") && (
-                            <p className="text-red-300/70 text-xs mt-2">
-                                This record was already consumed on-chain. Records have been refreshed automatically.
-                            </p>
-                        )}
-                        <button
-                            type="button"
-                            onClick={() => setTxError(null)}
-                            className="text-xs text-text-secondary hover:underline mt-2"
-                        >
-                            Dismiss
-                        </button>
+                    <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4">
+                        <div className="flex items-start gap-3">
+                            <AlertTriangle className="mt-0.5 h-4 w-4 text-red-400" />
+                            <div>
+                                <p className="text-sm font-medium text-red-300">{error || txError}</p>
+                                <button
+                                    type="button"
+                                    className="mt-2 text-xs text-text-secondary hover:underline"
+                                    onClick={() => setTxError(null)}
+                                >
+                                    Dismiss
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </FadeIn>
             )}
 
-            {/* Row 1: Init Payroll + Add Contributor */}
-            <div className="grid gap-6 md:grid-cols-2">
-                {/* Initialize Payroll Card */}
+            {(actionState === "pending" || actionState === "proving" || actionState === "success") && actionLabel && (
+                <FadeIn>
+                    <div className="rounded-lg border border-border bg-surface/40 p-4">
+                        <div className="flex items-center justify-between gap-4">
+                            <p className="text-sm font-medium">{actionLabel}</p>
+                            <StatusBadge status={actionState === "success" ? "success" : "pending"}>
+                                {actionState === "pending" && "Waiting for wallet"}
+                                {actionState === "proving" && "Finalizing on Aleo"}
+                                {actionState === "success" && "Synced"}
+                            </StatusBadge>
+                        </div>
+                    </div>
+                </FadeIn>
+            )}
+
+            <FadeIn delay={0.05}>
+                <div className="grid gap-4 rounded-xl border border-border bg-surface/30 p-4 md:grid-cols-4">
+                    <div>
+                        <p className="text-xs uppercase tracking-[0.16em] text-text-secondary">Total Payrolls</p>
+                        <p className="mt-2 text-2xl font-semibold">{payrolls.length}</p>
+                    </div>
+                    <div>
+                        <p className="text-xs uppercase tracking-[0.16em] text-text-secondary">Unpaid Contributors</p>
+                        <p className="mt-2 text-2xl font-semibold">{unpaidContributorCount}</p>
+                    </div>
+                    <div>
+                        <p className="text-xs uppercase tracking-[0.16em] text-text-secondary">Private Balance Records</p>
+                        <p className="mt-2 text-2xl font-semibold">{credits.length}</p>
+                    </div>
+                    <div>
+                        <p className="text-xs uppercase tracking-[0.16em] text-text-secondary">Last Synced</p>
+                        <p className="mt-2 text-lg font-semibold">{lastSyncedAt ? lastSyncedAt.toLocaleTimeString() : "Not yet synced"}</p>
+                    </div>
+                </div>
+            </FadeIn>
+
+            {selectedPayroll && (
+                <FadeIn delay={0.08}>
+                    <div className="grid gap-4 rounded-xl border border-border bg-surface/20 p-4 md:grid-cols-4">
+                        <div>
+                            <p className="text-xs uppercase tracking-[0.16em] text-text-secondary">Current Payroll</p>
+                            <p className="mt-2 text-base font-semibold">Payroll {selectedPayroll.payroll_id.slice(-6)}</p>
+                            <p className="mt-1 text-sm text-text-secondary">Cycle {selectedPayroll.cycle_index}</p>
+                        </div>
+                        <div>
+                            <p className="text-xs uppercase tracking-[0.16em] text-text-secondary">Budget</p>
+                            <p className="mt-2 text-2xl font-semibold">${formatUsd(selectedPayroll.budget_usd_cents)}</p>
+                        </div>
+                        <div>
+                            <p className="text-xs uppercase tracking-[0.16em] text-text-secondary">Spent</p>
+                            <p className="mt-2 text-2xl font-semibold">${formatUsd(selectedPayroll.spent_usd_cents)}</p>
+                            <p className="mt-1 text-sm text-text-secondary">Scheduled ${formatUsd(selectedPayroll.cycle_due_usd_cents)}</p>
+                        </div>
+                        <div>
+                            <p className="text-xs uppercase tracking-[0.16em] text-text-secondary">Status</p>
+                            <div className="mt-3 flex items-center gap-2">
+                                <StatusBadge status={statusTone(selectedPayroll.status)}>{statusLabel(selectedPayroll.status)}</StatusBadge>
+                            </div>
+                            <p className="mt-2 text-sm text-text-secondary">USD Rate (Locked): {formatRate(selectedPayroll.microcredits_per_usd_cent)} / USD</p>
+                        </div>
+                    </div>
+                </FadeIn>
+            )}
+
+            <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
                 <FadeIn delay={0.1}>
                     <SpotlightCard className="h-full">
                         <CardHeader>
                             <div className="flex items-center gap-2 mb-1">
-                                <CreditCard className="h-4 w-4 text-accent" />
-                                <CardTitle className="text-base">Create Payroll</CardTitle>
+                                <DollarSign className="h-4 w-4 text-accent" />
+                                <CardTitle className="text-base">1. Create Payroll</CardTitle>
                             </div>
                             <CardDescription>
-                                Set up a new payroll with a declared budget
+                                Define a USD-denominated budget and choose who can operate payroll after policy is set.
                             </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
                             <div className="space-y-2">
-                                <label className="text-xs font-medium text-text-secondary">Budget (Credits)</label>
+                                <label className="text-xs font-medium text-text-secondary">Payroll Budget (USD)</label>
                                 <Input
-                                    placeholder="e.g. 10.0"
                                     type="number"
+                                    step="0.01"
                                     min="0"
+                                    placeholder="2500.00"
+                                    value={budgetUsd}
+                                    onChange={(event) => setBudgetUsd(event.target.value)}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-xs font-medium text-text-secondary">USD Rate (Locked)</label>
+                                <Input
+                                    type="number"
                                     step="0.000001"
-                                    value={initBudget}
-                                    onChange={(e) => setInitBudget(e.target.value)}
+                                    min="0"
+                                    placeholder="1.250000"
+                                    value={rateCreditsPerUsd}
+                                    onChange={(event) => setRateCreditsPerUsd(event.target.value)}
                                 />
                                 <p className="text-xs text-text-secondary">
-                                    No credits are locked — budget is tracked on-chain. You provide funding credits when paying contributors.
+                                    This rate is stored on-chain for the payroll and used each time payouts are executed privately.
                                 </p>
                             </div>
+                            <div className="space-y-2">
+                                <label className="text-xs font-medium text-text-secondary">Manager Address (optional)</label>
+                                <Input
+                                    placeholder={address || "aleo1..."}
+                                    value={managerAddress}
+                                    onChange={(event) => setManagerAddress(event.target.value)}
+                                />
+                                <p className="text-xs text-text-secondary">
+                                    The owner sets payroll policy. A manager can run payroll later, but cannot change contributor rules.
+                                </p>
+                            </div>
+                            <div className="rounded-lg border border-border bg-surface/20 p-3 text-sm text-text-secondary">
+                                Designed for USD-denominated payroll (future integration with USDCX/USAD).
+                            </div>
                         </CardContent>
-                        <CardFooter className="flex flex-col gap-3">
+                        <CardFooter>
                             <Button
                                 className="w-full"
-                                onClick={handleInitPayroll}
-                                disabled={initStatus !== "idle" || !initBudget || parseFloat(initBudget) <= 0 || isLoading}
+                                onClick={() => { void handleCreatePayroll(); }}
+                                disabled={txBusy || isLoading || !budgetUsd || !rateCreditsPerUsd}
                             >
-                                {initStatus === "pending" && "Pending..."}
-                                {initStatus === "proving" && "Generating ZK Proof..."}
-                                {initStatus === "idle" && "Create Payroll"}
+                                Create Payroll
                             </Button>
-                            {initStatus === "success" && (
-                                <StatusBadge status="success">Payroll created</StatusBadge>
-                            )}
-                            {initStatus === "error" && (
-                                <StatusBadge status="error">Creation failed</StatusBadge>
-                            )}
                         </CardFooter>
                     </SpotlightCard>
                 </FadeIn>
 
-                {/* Add Contributor Card */}
-                <FadeIn delay={0.2}>
+                <FadeIn delay={0.15}>
                     <SpotlightCard className="h-full">
                         <CardHeader>
                             <div className="flex items-center gap-2 mb-1">
-                                <Plus className="h-4 w-4 text-accent" />
-                                <CardTitle className="text-base">Add Contributor</CardTitle>
+                                <Users className="h-4 w-4 text-accent" />
+                                <CardTitle className="text-base">Available Payrolls</CardTitle>
                             </div>
                             <CardDescription>
-                                Register a contributor — budget is reserved immediately
+                                Choose the payroll you want to manage and review results.
                             </CardDescription>
                         </CardHeader>
-                        <CardContent className="space-y-4">
-                            <div className="space-y-2">
-                                <label className="text-xs font-medium text-text-secondary">Select Payroll</label>
-                                <select
-                                    className="w-full p-2 bg-background border border-border rounded-md text-sm"
-                                    value={addPayrollId}
-                                    onChange={(e) => { setAddPayrollId(e.target.value); setAddError(null); }}
-                                >
-                                    <option value="">Choose a payroll...</option>
-                                    {payrolls.map((payroll, idx) => (
-                                        <option key={payroll.id} value={payroll.id}>
-                                            Payroll #{idx + 1}: {(payroll.total_budget / 1_000_000).toFixed(2)} total, {(payroll.remaining_budget / 1_000_000).toFixed(2)} remaining
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs font-medium text-text-secondary">Contributor Address</label>
-                                <Input
-                                    placeholder="aleo1..."
-                                    value={contributorAddress}
-                                    onChange={(e) => setContributorAddress(e.target.value)}
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs font-medium text-text-secondary">Committed Payout (Credits)</label>
-                                <Input
-                                    placeholder="0.00"
-                                    type="number"
-                                    value={payoutAmount}
-                                    onChange={(e) => { setPayoutAmount(e.target.value); setAddError(null); }}
-                                />
-                                <p className="text-xs text-text-secondary">
-                                    This amount is locked at add-time and reserved from the budget
+                        <CardContent className="space-y-3">
+                            {payrolls.length === 0 && (
+                                <p className="text-sm text-text-secondary">
+                                    No payrolls in the connected wallet yet.
                                 </p>
-                                {addPayroll && payoutAmount && (
-                                    <p className={`text-xs ${
-                                        Math.floor(parseFloat(payoutAmount) * 1_000_000) > (addPayroll.remaining_budget || 0) 
-                                            ? 'text-red-400' 
-                                            : 'text-green-400'
-                                    }`}>
-                                        {Math.floor(parseFloat(payoutAmount) * 1_000_000) > (addPayroll.remaining_budget || 0) 
-                                            ? 'Exceeds remaining budget!' 
-                                            : 'Within remaining budget'}
+                            )}
+                            {payrolls.map((payroll) => (
+                                <button
+                                    key={payroll.id}
+                                    type="button"
+                                    onClick={() => setSelectedPayrollKey(payroll.payroll_id)}
+                                    className={`w-full rounded-lg border p-4 text-left transition-colors ${
+                                        selectedPayrollKey === payroll.payroll_id
+                                            ? "border-accent bg-accent/5"
+                                            : "border-border bg-surface/20 hover:border-border/80"
+                                    }`}
+                                >
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div>
+                                            <p className="text-sm font-medium">Payroll {payroll.payroll_id.slice(-6)}</p>
+                                            <p className="mt-1 text-xs text-text-secondary">
+                                                ${formatUsd(payroll.budget_usd_cents)} budget • ${formatUsd(payroll.spent_usd_cents)} spent
+                                            </p>
+                                        </div>
+                                        <StatusBadge status={statusTone(payroll.status)}>{statusLabel(payroll.status)}</StatusBadge>
+                                    </div>
+                                </button>
+                            ))}
+                        </CardContent>
+                    </SpotlightCard>
+                </FadeIn>
+            </div>
+
+            {selectedPayroll && (
+                <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+                    <FadeIn delay={0.2}>
+                        <SpotlightCard className="h-full">
+                            <CardHeader>
+                                <div className="flex items-center gap-2 mb-1">
+                                    <Plus className="h-4 w-4 text-accent" />
+                                    <CardTitle className="text-base">2. Add Contributors</CardTitle>
+                                </div>
+                                <CardDescription>
+                                    Set contributor payouts in USD and decide whether they recur in future payroll cycles.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                                <div className="space-y-2">
+                                    <label className="text-xs font-medium text-text-secondary">Contributor Address</label>
+                                    <Input
+                                        placeholder="aleo1..."
+                                        value={contributorAddress}
+                                        onChange={(event) => setContributorAddress(event.target.value)}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-xs font-medium text-text-secondary">Payout per Cycle (USD)</label>
+                                    <Input
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        placeholder="750.00"
+                                        value={payoutUsd}
+                                        onChange={(event) => setPayoutUsd(event.target.value)}
+                                    />
+                                </div>
+                                <label className="flex items-center gap-3 rounded-lg border border-border bg-surface/20 p-3 text-sm">
+                                    <input
+                                        type="checkbox"
+                                        className="h-4 w-4"
+                                        checked={recurring}
+                                        onChange={(event) => setRecurring(event.target.checked)}
+                                    />
+                                    Carry this contributor into future payroll cycles
+                                </label>
+                                <div className="rounded-lg border border-border bg-surface/20 p-3 text-sm text-text-secondary">
+                                    Current active commitments: ${formatUsd(selectedPayroll.active_commitment_usd_cents)} / ${formatUsd(selectedPayroll.budget_usd_cents)}
+                                </div>
+                                <div className="rounded-lg border border-border bg-surface/20 p-3 text-sm text-text-secondary">
+                                    Example: A DAO pays 5 contributors monthly without exposing salaries.
+                                </div>
+                            </CardContent>
+                            <CardFooter className="flex flex-col gap-3">
+                                {selectedPayroll.status !== 0 ? (
+                                    <p className="w-full rounded-lg border border-border bg-surface/20 px-3 py-2 text-sm text-text-secondary">
+                                        Cannot add contributors after payroll execution. Open next cycle to continue
+                                    </p>
+                                ) : (
+                                    <Button
+                                        className="w-full"
+                                        onClick={() => { void handleAddContributor(); }}
+                                        disabled={txBusy || isLoading || !canEditPayrollPolicy || !contributorAddress || !payoutUsd}
+                                    >
+                                        Add Contributor
+                                    </Button>
+                                )}
+                                {!canEditPayrollPolicy && (
+                                    <p className="text-xs text-text-secondary">
+                                        Only the owner can define contributors and payouts. Managers are execution-only.
                                     </p>
                                 )}
-                                {addError && (
-                                    <p className="text-xs text-red-400">{addError}</p>
+                                {canEditPayrollPolicy && selectedPayroll.status !== 0 && (
+                                    <p className="text-xs text-text-secondary">
+                                        New contributors can only be added while the cycle is OPEN.
+                                    </p>
                                 )}
-                            </div>
-                        </CardContent>
-                        <CardFooter className="flex flex-col gap-3">
-                            <Button
-                                className="w-full"
-                                onClick={handleAddContributor}
-                                disabled={addContributorStatus !== "idle" || !addPayroll || !contributorAddress || !payoutAmount || isLoading}
-                            >
-                                {addContributorStatus === "pending" && "Pending..."}
-                                {addContributorStatus === "proving" && "Generating ZK Proof..."}
-                                {addContributorStatus === "idle" && "Add Contributor"}
-                            </Button>
-                            {addContributorStatus === "success" && (
-                                <StatusBadge status="success">Contributor added</StatusBadge>
-                            )}
-                            {addContributorStatus === "error" && (
-                                <StatusBadge status="error">Failed to add</StatusBadge>
-                            )}
-                        </CardFooter>
-                    </SpotlightCard>
-                </FadeIn>
-            </div>
+                            </CardFooter>
+                        </SpotlightCard>
+                    </FadeIn>
 
-            {/* Row 2: Pay Single + Batch Pay */}
-            <div className="grid gap-6 md:grid-cols-2">
-                {/* Pay Single Contributor Card */}
-                <FadeIn delay={0.3}>
-                    <SpotlightCard className="h-full">
-                        <CardHeader>
-                            <div className="flex items-center gap-2 mb-1">
-                                <Send className="h-4 w-4 text-accent" />
-                                <CardTitle className="text-base">Pay Contributor</CardTitle>
-                            </div>
-                            <CardDescription>
-                                Execute payout to a single contributor
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                            <div className="space-y-2">
-                                <label className="text-xs font-medium text-text-secondary">Select Payroll</label>
-                                <select
-                                    className="w-full p-2 bg-background border border-border rounded-md text-sm"
-                                    value={payPayrollId}
-                                    onChange={(e) => { setPayPayrollId(e.target.value); setPayContributorId(""); setPayFundingCreditId(""); }}
-                                >
-                                    <option value="">Choose a payroll...</option>
-                                    {payrolls.map((payroll, idx) => (
-                                        <option key={payroll.id} value={payroll.id}>
-                                            Payroll #{idx + 1}: {(payroll.total_budget / 1_000_000).toFixed(2)} total, {(payroll.remaining_budget / 1_000_000).toFixed(2)} remaining
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs font-medium text-text-secondary">Select Contributor</label>
-                                <select
-                                    className="w-full p-2 bg-background border border-border rounded-md text-sm"
-                                    value={payContributorId}
-                                    onChange={(e) => { setPayContributorId(e.target.value); setPayFundingCreditId(""); }}
-                                >
-                                    <option value="">Choose a contributor...</option>
-                                    {payContributors.map((contributor) => (
-                                        <option key={contributor.id} value={contributor.id}>
-                                            {contributor.contributor.slice(0, 12)}... ({(contributor.payout / 1_000_000).toFixed(2)} credits)
-                                        </option>
-                                    ))}
-                                </select>
-                                <p className="text-xs text-text-secondary">
-                                    {payContributors.length} unpaid contributor(s)
-                                </p>
-                            </div>
-                            {selectedPayContributor && (
-                                <>
-                                    <div className="p-3 bg-surface/50 rounded-lg">
-                                        <p className="text-xs text-text-secondary">Payout Amount</p>
-                                        <p className="text-sm font-medium">{(selectedPayContributor.payout / 1_000_000).toFixed(6)} credits</p>
+                    <FadeIn delay={0.25}>
+                        <SpotlightCard className="h-full">
+                            <CardHeader>
+                                <div className="flex items-center gap-2 mb-1">
+                                    <Play className="h-4 w-4 text-accent" />
+                                    <CardTitle className="text-base">3. Run Payroll</CardTitle>
+                                </div>
+                                <CardDescription>
+                                    Run a payroll cycle to pay contributors privately. The system automatically uses available private credits.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                    <div className="rounded-lg border border-border bg-surface/20 p-3">
+                                        <p className="text-xs text-text-secondary">Due Contributors</p>
+                                        <p className="mt-1 text-xl font-semibold">{dueContributors.length}</p>
                                     </div>
-                                    <div className="space-y-2">
-                                        <label className="text-xs font-medium text-text-secondary">Select Funding Credit</label>
-                                        <select
-                                            className="w-full p-2 bg-background border border-border rounded-md text-sm"
-                                            value={payFundingCreditId}
-                                            onChange={(e) => setPayFundingCreditId(e.target.value)}
-                                        >
-                                            <option value="">Choose a credit...</option>
-                                            {getSufficientCredits(selectedPayContributor.payout).map((credit) => (
-                                                <option key={credit.id} value={credit.id}>
-                                                    {(credit.microcredits / 1_000_000).toFixed(6)} credits
-                                                    {credit.microcredits > selectedPayContributor.payout 
-                                                        ? ` (change: ${((credit.microcredits - selectedPayContributor.payout) / 1_000_000).toFixed(6)})` 
-                                                        : " (exact)"}
-                                                </option>
-                                            ))}
-                                        </select>
-                                        {getSufficientCredits(selectedPayContributor.payout).length === 0 && (
-                                            <p className="text-xs text-yellow-400">
-                                                No credit record with at least {(selectedPayContributor.payout / 1_000_000).toFixed(6)} credits found.
-                                            </p>
-                                        )}
-                                    </div>
-                                </>
-                            )}
-                        </CardContent>
-                        <CardFooter className="flex flex-col gap-3">
-                            <Button
-                                className="w-full"
-                                onClick={handlePayContributor}
-                                disabled={payStatus !== "idle" || !payPayroll || !selectedPayContributor || !payFundingCreditId || isLoading}
-                            >
-                                {payStatus === "pending" && "Pending..."}
-                                {payStatus === "proving" && "Generating ZK Proof..."}
-                                {payStatus === "idle" && "Execute Payout"}
-                            </Button>
-                            {payStatus === "success" && (
-                                <StatusBadge status="success">Payment executed</StatusBadge>
-                            )}
-                            {payStatus === "error" && (
-                                <StatusBadge status="error">Payment failed</StatusBadge>
-                            )}
-                        </CardFooter>
-                    </SpotlightCard>
-                </FadeIn>
-
-                {/* Batch Pay Card — Wave 3 Feature */}
-                <FadeIn delay={0.4}>
-                    <SpotlightCard className="h-full">
-                        <CardHeader>
-                            <div className="flex items-center gap-2 mb-1">
-                                <Play className="h-4 w-4 text-accent" />
-                                <CardTitle className="text-base">Run Payroll</CardTitle>
-                                <StatusBadge status="neutral">Batch</StatusBadge>
-                            </div>
-                            <CardDescription>
-                                Pay 2–3 contributors in a single transaction
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                            <div className="space-y-2">
-                                <label className="text-xs font-medium text-text-secondary">Select Payroll</label>
-                                <select
-                                    className="w-full p-2 bg-background border border-border rounded-md text-sm"
-                                    value={batchPayrollId}
-                                    onChange={(e) => { setBatchPayrollId(e.target.value); setBatchSelections({}); setBatchFunding({}); }}
-                                >
-                                    <option value="">Choose a payroll...</option>
-                                    {payrolls.map((payroll, idx) => (
-                                        <option key={payroll.id} value={payroll.id}>
-                                            Payroll #{idx + 1}: {(payroll.total_budget / 1_000_000).toFixed(2)} total, {(payroll.remaining_budget / 1_000_000).toFixed(2)} remaining
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
-
-                            {batchPayroll && batchContributors.length > 0 && (
-                                <div className="space-y-3">
-                                    <label className="text-xs font-medium text-text-secondary">
-                                        Select Contributors ({selectedBatchContributors.length}/3)
-                                    </label>
-                                    <div className="space-y-2 max-h-64 overflow-y-auto">
-                                        {batchContributors.map((c) => {
-                                            const isSelected = !!batchSelections[c.id];
-                                            const sufficientCredits = getSufficientCredits(c.payout);
-                                            return (
-                                                <div
-                                                    key={c.id}
-                                                    className={`p-3 rounded-lg border transition-colors ${
-                                                        isSelected 
-                                                            ? 'border-accent bg-accent/5' 
-                                                            : 'border-border bg-surface/30 hover:border-border/80'
-                                                    }`}
-                                                >
-                                                    <div className="flex items-center justify-between">
-                                                        <label className="flex items-center gap-2 cursor-pointer flex-1">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={isSelected}
-                                                                onChange={() => toggleBatchSelection(c.id)}
-                                                                className="rounded border-border"
-                                                                disabled={!isSelected && selectedBatchContributors.length >= 3}
-                                                            />
-                                                            <span className="text-sm">
-                                                                {c.contributor.slice(0, 10)}...{c.contributor.slice(-4)}
-                                                            </span>
-                                                        </label>
-                                                        <span className="text-xs text-text-secondary">
-                                                            {(c.payout / 1_000_000).toFixed(2)} credits
-                                                        </span>
-                                                    </div>
-                                                    {isSelected && (
-                                                        <div className="mt-2">
-                                                            <select
-                                                                className="w-full p-1.5 bg-background border border-border rounded text-xs"
-                                                                value={batchFunding[c.id] || ""}
-                                                                onChange={(e) => setBatchFunding(prev => ({ ...prev, [c.id]: e.target.value }))}
-                                                            >
-                                                                <option value="">Assign funding credit...</option>
-                                                                {sufficientCredits.map((credit) => (
-                                                                    <option key={credit.id} value={credit.id}>
-                                                                        {(credit.microcredits / 1_000_000).toFixed(6)} credits
-                                                                    </option>
-                                                                ))}
-                                                            </select>
-                                                            {sufficientCredits.length === 0 && (
-                                                                <p className="text-xs text-yellow-400 mt-1">
-                                                                    No sufficient credit record found
-                                                                </p>
-                                                            )}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
+                                    <div className="rounded-lg border border-border bg-surface/20 p-3">
+                                        <p className="text-xs text-text-secondary">Total Due (USD)</p>
+                                        <p className="mt-1 text-xl font-semibold">${formatUsd(selectedPayroll.remaining_cycle_usd_cents)}</p>
                                     </div>
                                 </div>
-                            )}
-
-                            {batchPayroll && batchContributors.length === 0 && (
-                                <p className="text-xs text-text-secondary text-center py-4">
-                                    No unpaid contributors for this payroll
-                                </p>
-                            )}
-
-                            {batchPayroll && batchContributors.length === 1 && (
-                                <p className="text-xs text-yellow-400 text-center py-2">
-                                    Batch pay requires at least 2 contributors. Use single pay instead.
-                                </p>
-                            )}
-                        </CardContent>
-                        <CardFooter className="flex flex-col gap-3">
-                            <Button
-                                className="w-full"
-                                onClick={handleBatchPay}
-                                disabled={
-                                    batchPayStatus !== "idle" || 
-                                    !batchPayroll || 
-                                    selectedBatchContributors.length < 2 || 
-                                    selectedBatchContributors.length > 3 ||
-                                    selectedBatchContributors.some(c => !batchFunding[c.id]) ||
-                                    isLoading
-                                }
-                            >
-                                {batchPayStatus === "pending" && "Pending..."}
-                                {batchPayStatus === "proving" && "Generating ZK Proof..."}
-                                {batchPayStatus === "idle" && `Run Payroll (${selectedBatchContributors.length} selected)`}
-                            </Button>
-                            {batchPayStatus === "success" && (
-                                <StatusBadge status="success">Batch payment executed</StatusBadge>
-                            )}
-                            {batchPayStatus === "error" && (
-                                <StatusBadge status="error">Batch payment failed</StatusBadge>
-                            )}
-                        </CardFooter>
-                    </SpotlightCard>
-                </FadeIn>
-            </div>
-
-            {/* Disclose Spent Section */}
-            <FadeIn delay={0.5}>
-                <SpotlightCard className="bg-surface/50">
-                    <CardHeader>
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <CardTitle className="text-base">Disclose Spent Budget</CardTitle>
-                                <CardDescription>Voluntarily reveal aggregate spending</CardDescription>
-                            </div>
-                            <StatusBadge status="neutral">Private</StatusBadge>
-                        </div>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                        <div className="grid md:grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                                <label className="text-xs font-medium text-text-secondary">Select Payroll</label>
-                                <select
-                                    className="w-full p-2 bg-background border border-border rounded-md text-sm"
-                                    value={disclosePayrollId}
-                                    onChange={(e) => setDisclosePayrollId(e.target.value)}
+                                <div className="rounded-lg border border-border bg-surface/20 p-3 text-sm">
+                                    <p className="font-medium">Private Balance</p>
+                                    <p className="mt-2 text-text-secondary">
+                                        Available private balance: {formatCredits(availableMicrocredits)} across {credits.length} record(s).
+                                    </p>
+                                    <p className="mt-2 text-text-secondary">
+                                        Estimated private balance needed for this payroll: {formatCredits(cycleRequiredMicrocredits)}. The system automatically uses available private credits and refreshes after each finalized step.
+                                    </p>
+                                </div>
+                                <div className="space-y-2">
+                                    {dueContributors.length === 0 ? (
+                                        <p className="text-sm text-text-secondary">All current-cycle contributors are already paid.</p>
+                                    ) : (
+                                        dueContributors.map((contributor) => (
+                                            <div key={contributor.id} className="flex items-center justify-between rounded-lg border border-border bg-surface/20 px-3 py-2 text-sm">
+                                                <div>
+                                                    <p className="font-medium">{formatAddress(contributor.contributor, 10)}</p>
+                                                    <p className="text-xs text-text-secondary">
+                                                        {contributor.recurring ? "Recurring" : "One-time"}
+                                                    </p>
+                                                </div>
+                                                <div className="text-right">
+                                                    <p>${formatUsd(contributor.payout_usd_cents)}</p>
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </CardContent>
+                            <CardFooter className="flex flex-col gap-3">
+                                <Button
+                                    className="w-full"
+                                    onClick={() => { void handleRunPayroll(); }}
+                                    disabled={
+                                        txBusy ||
+                                        isLoading ||
+                                        !canOperatePayroll ||
+                                        selectedPayroll.status !== 0 ||
+                                        dueContributors.length === 0 ||
+                                        !nextExecutionPlan
+                                    }
                                 >
-                                    <option value="">Choose a payroll...</option>
-                                    {payrolls.map((payroll, idx) => (
-                                        <option key={payroll.id} value={payroll.id}>
-                                            Payroll #{idx + 1}: {(payroll.total_budget / 1_000_000).toFixed(2)} total, {(payroll.remaining_budget / 1_000_000).toFixed(2)} remaining
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
-                        </div>
-                        <Button
-                            onClick={handleDiscloseSpent}
-                            disabled={discloseStatus !== "idle" || !disclosePayroll || isLoading}
-                            variant="secondary"
-                        >
-                            {discloseStatus === "pending" && "Pending..."}
-                            {discloseStatus === "proving" && "Generating ZK Proof..."}
-                            {discloseStatus === "idle" && "Disclose Spent Amount"}
-                        </Button>
-                        {discloseStatus === "success" && (
-                            <StatusBadge status="success">Spent amount disclosed</StatusBadge>
-                        )}
-                    </CardContent>
-                </SpotlightCard>
-            </FadeIn>
-
-            {/* Refresh Data Buttons */}
-            <FadeIn delay={0.6}>
-                <div className="flex gap-4">
-                    <Button variant="outline" onClick={loadCredits} disabled={isLoading || creditsLoading}>
-                        <CreditCard className="h-4 w-4 mr-2" />
-                        Refresh Credits {creditsLoading ? "..." : `(${credits.length})`}
-                    </Button>
-                    <Button variant="outline" onClick={loadPayrolls} disabled={isLoading}>
-                        <Users className="h-4 w-4 mr-2" />
-                        Refresh Payrolls ({payrolls.length})
-                    </Button>
-                    <Button variant="outline" onClick={loadContributors} disabled={isLoading}>
-                        <Users className="h-4 w-4 mr-2" />
-                        Refresh Contributors ({contributors.length})
-                    </Button>
+                                    Run Payroll
+                                </Button>
+                                <div className="flex w-full gap-3">
+                                    <Button
+                                        className="flex-1"
+                                        variant="secondary"
+                                        onClick={() => { void handleCloseCycle(); }}
+                                        disabled={txBusy || isLoading || !canOperatePayroll || selectedPayroll.status !== 1}
+                                    >
+                                        Close Cycle
+                                    </Button>
+                                    <Button
+                                        className="flex-1"
+                                        variant="outline"
+                                        onClick={() => { void handleOpenNextCycle(); }}
+                                        disabled={txBusy || isLoading || !canOperatePayroll || selectedPayroll.status !== 2}
+                                    >
+                                        Open Next Cycle
+                                    </Button>
+                                </div>
+                                {!canOperatePayroll && (
+                                    <p className="text-xs text-text-secondary">
+                                        Switch to the active operator wallet to run payroll or move the cycle forward.
+                                    </p>
+                                )}
+                                {canOperatePayroll && dueContributors.length > 0 && !nextExecutionPlan && (
+                                    <p className="text-xs text-text-secondary">
+                                        Add more private balance to the operator wallet, then Sync with Wallet and try again.
+                                    </p>
+                                )}
+                            </CardFooter>
+                        </SpotlightCard>
+                    </FadeIn>
                 </div>
-                {creditsError && (
-                    <p className="text-xs text-red-400 mt-2">Credits error: {creditsError}</p>
-                )}
-            </FadeIn>
+            )}
+
+            {selectedPayroll && (
+                <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+                    <FadeIn delay={0.3}>
+                        <SpotlightCard className="h-full">
+                            <CardHeader>
+                                <div className="flex items-center gap-2 mb-1">
+                                    <Users className="h-4 w-4 text-accent" />
+                                    <CardTitle className="text-base">4. View Results</CardTitle>
+                                </div>
+                                <CardDescription>
+                                    Review who has been paid, who will recur next cycle, and what remains scheduled.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-3">
+                                <div className="rounded-lg border border-border bg-surface/20 p-3 text-sm">
+                                    <p className="font-medium">Roles</p>
+                                    <p className="mt-2 text-text-secondary">Treasury owner: {formatAddress(selectedPayroll.treasury_owner)}</p>
+                                    <p className="text-text-secondary">Active operator: {formatAddress(selectedPayroll.owner)}</p>
+                                    <p className="text-text-secondary">
+                                        Manager: {managerConfigured ? formatAddress(selectedPayroll.manager) : "Not configured"}
+                                    </p>
+                                    {managerConfigured && (
+                                        <p className="mt-2 text-xs text-text-secondary">
+                                            Operator handoff moves the live payroll and contributor records to the next wallet. Switch wallets after the final sync.
+                                        </p>
+                                    )}
+                                </div>
+                                <div className="space-y-2">
+                                    {payrollContributors.length === 0 && (
+                                        <p className="text-sm text-text-secondary">No contributors scheduled yet.</p>
+                                    )}
+                                    {payrollContributors.map((contributor) => (
+                                        <div key={contributor.id} className="flex items-center justify-between rounded-lg border border-border bg-surface/20 px-3 py-2 text-sm">
+                                            <div>
+                                                <p className="font-medium">{formatAddress(contributor.contributor, 10)}</p>
+                                                <p className="text-xs text-text-secondary">
+                                                    {contributor.recurring ? "Recurring schedule" : "One-time payment"}
+                                                </p>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <StatusBadge status={contributorPaidThisCycle(contributor, selectedPayroll) ? "success" : contributor.active ? "pending" : "neutral"}>
+                                                    {contributorPaidThisCycle(contributor, selectedPayroll)
+                                                        ? "Paid this cycle"
+                                                        : contributor.active
+                                                            ? "Queued"
+                                                            : "Completed"}
+                                                </StatusBadge>
+                                                <span>${formatUsd(contributor.payout_usd_cents)}</span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </CardContent>
+                            <CardFooter>
+                                <div className="w-full text-sm text-text-secondary">
+                                    {paidThisCycle.length} contributor(s) paid in cycle {selectedPayroll.cycle_index}.
+                                </div>
+                            </CardFooter>
+                        </SpotlightCard>
+                    </FadeIn>
+
+                    <FadeIn delay={0.35}>
+                        <SpotlightCard className="h-full">
+                            <CardHeader>
+                                <div className="flex items-center gap-2 mb-1">
+                                    <ArrowRightLeft className="h-4 w-4 text-accent" />
+                                    <CardTitle className="text-base">Owner and Manager</CardTitle>
+                                </div>
+                                <CardDescription>
+                                    The owner defines payroll policy. The manager can execute payroll operations after handoff.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                                <div className="rounded-lg border border-border bg-surface/20 p-3 text-sm text-text-secondary">
+                                    <p className="font-medium text-text-primary">USD Rate (Locked)</p>
+                                    <p className="mt-2">
+                                        {formatRate(selectedPayroll.microcredits_per_usd_cent)} / USD
+                                    </p>
+                                </div>
+                                <div className="rounded-lg border border-border bg-surface/20 p-3 text-sm text-text-secondary">
+                                    <p className="font-medium text-text-primary">Use cases</p>
+                                    <p className="mt-2">Built for private contributor payments first, with grants, bounty payouts, and team payroll following the same flow.</p>
+                                </div>
+                            </CardContent>
+                            <CardFooter className="flex flex-col gap-3">
+                                <Button
+                                    variant="outline"
+                                    className="w-full"
+                                    onClick={() => { void handleOperatorHandoff(); }}
+                                    disabled={
+                                        txBusy ||
+                                        isLoading ||
+                                        !managerConfigured
+                                    }
+                                >
+                                    {selectedPayroll.owner === selectedPayroll.treasury_owner ? "Delegate Operations to Manager" : "Return Operations to Owner"}
+                                </Button>
+                                {!managerConfigured && (
+                                    <p className="text-xs text-text-secondary">
+                                        Set a manager when creating the payroll to enable operator handoff.
+                                    </p>
+                                )}
+                            </CardFooter>
+                        </SpotlightCard>
+                    </FadeIn>
+                </div>
+            )}
         </div>
     );
 }

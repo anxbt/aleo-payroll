@@ -1,333 +1,340 @@
 /**
  * Aleo Program Execution Script
- * 
- * This script executes functions on the deployed payroll_rishav_v3.aleo program.
- * Use this to test your contract after deployment.
+ *
+ * Helper CLI for the confidential payroll lifecycle:
+ * init -> add contributors -> run payroll -> close -> open next cycle.
  */
 
-import { 
-    Account, 
-    AleoNetworkClient, 
-    ProgramManager, 
+import {
+    Account,
     AleoKeyProvider,
-    initThreadPool
-} from '@provablehq/sdk';
-
-// ============================================
-// Configuration
-// ============================================
+    AleoNetworkClient,
+    ProgramManager,
+    initThreadPool,
+} from "@provablehq/sdk";
 
 const PRIVATE_KEY = "APrivateKey1zkp8X8TxoYtZFqyo34rxBubotDawenZkpPbfFDzkEHZWQRR";
 const NETWORK_URL = "https://api.explorer.provable.com/v1";
-const PROGRAM_ID = "payroll_rishav_v3.aleo";
+const PROGRAM_ID = "payroll_rishav_v4.aleo";
 
-// ============================================
-// Helper Functions
-// ============================================
-
-async function setupProgramManager(): Promise<{ 
-    programManager: ProgramManager; 
+async function setupProgramManager(): Promise<{
+    programManager: ProgramManager;
     account: Account;
     networkClient: AleoNetworkClient;
 }> {
     await initThreadPool();
-    
+
     const account = new Account({ privateKey: PRIVATE_KEY });
     const networkClient = new AleoNetworkClient(NETWORK_URL);
     const keyProvider = new AleoKeyProvider();
     keyProvider.useCache(true);
-    
+
     const programManager = new ProgramManager(NETWORK_URL, keyProvider);
     programManager.setAccount(account);
-    
+
     return { programManager, account, networkClient };
 }
 
 async function waitForTransaction(
-    networkClient: AleoNetworkClient, 
-    txId: string, 
+    networkClient: AleoNetworkClient,
+    txId: string,
     maxAttempts = 60
 ): Promise<boolean> {
     console.log(`⏳ Waiting for transaction ${txId.slice(0, 20)}...`);
-    
-    for (let i = 0; i < maxAttempts; i++) {
+
+    for (let i = 0; i < maxAttempts; i += 1) {
         try {
             const tx = await networkClient.getTransaction(txId);
             if (tx) {
                 console.log("✅ Transaction confirmed!");
                 return true;
             }
-        } catch (e) {
-            process.stdout.write('.');
-            await new Promise(resolve => setTimeout(resolve, 5000));
+        } catch {
+            process.stdout.write(".");
+            await new Promise((resolve) => setTimeout(resolve, 5000));
         }
     }
-    
-    console.log("\n⚠️  Transaction not confirmed within timeout");
+
+    console.log("\n⚠️ Transaction not confirmed within timeout");
     return false;
 }
 
-// ============================================
-// Contract Functions
-// ============================================
-
-/**
- * Initialize a new payroll with a declared budget.
- * No credits are consumed — budget is internal accounting only.
- */
-async function initPayroll(totalBudget: number) {
-    console.log("\n🚀 Executing init_payroll...");
-    console.log(`   Total Budget: ${totalBudget} microcredits`);
-    
+async function executeAndWait(
+    functionName: string,
+    inputs: string[],
+    fee = 1.0
+): Promise<string> {
     const { programManager, networkClient } = await setupProgramManager();
-    
-    const txId = await programManager.execute(
-        PROGRAM_ID,
-        "init_payroll",
-        [`${totalBudget}u64`],
-        1.0,
-        false
-    );
-    
+    const txId = await programManager.execute(PROGRAM_ID, functionName, inputs, fee, false);
     console.log(`✅ Transaction submitted: ${txId}`);
     await waitForTransaction(networkClient, txId);
-    
     return txId;
 }
 
-/**
- * Add a contributor to an existing payroll.
- * Budget is reserved immediately (spent_budget incremented at add-time).
- */
-async function addContributor(
-    payrollRecord: string, 
-    contributorAddress: string, 
-    payout: number
+async function initPayroll(
+    payrollId: string,
+    budgetUsdCents: number,
+    microcreditsPerUsdCent: number,
+    manager: string
 ) {
-    console.log("\n🚀 Executing add_contributor...");
-    console.log(`   Contributor: ${contributorAddress.slice(0, 20)}...`);
-    console.log(`   Payout: ${payout} microcredits`);
-    
-    const { programManager, networkClient } = await setupProgramManager();
-    
-    const txId = await programManager.execute(
-        PROGRAM_ID,
-        "add_contributor",
-        [payrollRecord, contributorAddress, `${payout}u64`],
-        1.0,
-        false
+    console.log("\n🚀 Creating payroll...");
+    console.log(`   Payroll ID: ${payrollId}`);
+    console.log(`   Budget: ${budgetUsdCents} usd-cents`);
+    console.log(`   Rate: ${microcreditsPerUsdCent} microcredits / usd-cent`);
+    console.log(`   Manager: ${manager}`);
+
+    return executeAndWait(
+        "init_payroll",
+        [`${payrollId}field`, `${budgetUsdCents}u64`, `${microcreditsPerUsdCent}u64`, manager]
     );
-    
-    console.log(`✅ Transaction submitted: ${txId}`);
-    await waitForTransaction(networkClient, txId);
-    
-    return txId;
 }
 
-/**
- * Pay a single contributor.
- * Owner provides a funding credit >= payout. Change is returned automatically.
- */
-async function payContributor(
+async function addContributor(
+    payrollRecord: string,
+    contributorAddress: string,
+    payoutUsdCents: number,
+    recurring: boolean
+) {
+    console.log("\n🚀 Adding contributor...");
+    console.log(`   Contributor: ${contributorAddress.slice(0, 20)}...`);
+    console.log(`   Payout: ${payoutUsdCents} usd-cents`);
+    console.log(`   Recurring: ${recurring}`);
+
+    return executeAndWait(
+        "add_contributor",
+        [payrollRecord, contributorAddress, `${payoutUsdCents}u64`, recurring ? "true" : "false"]
+    );
+}
+
+async function runPayrollSingle(
     payrollRecord: string,
     contributorRecord: string,
-    fundingCreditRecord: string
+    fundingCredit: string,
+    finalizeCycle: boolean
 ) {
-    console.log("\n🚀 Executing pay_contributor...");
-    
-    const { programManager, networkClient } = await setupProgramManager();
-    
-    const txId = await programManager.execute(
-        PROGRAM_ID,
-        "pay_contributor",
-        [payrollRecord, contributorRecord, fundingCreditRecord],
-        1.0,
-        false
+    console.log("\n🚀 Running payroll...");
+    return executeAndWait(
+        "execute_payroll_batch_1",
+        [payrollRecord, contributorRecord, fundingCredit, finalizeCycle ? "true" : "false"]
     );
-    
-    console.log(`✅ Transaction submitted: ${txId}`);
-    await waitForTransaction(networkClient, txId);
-    
-    return txId;
 }
 
-/**
- * Batch pay 2 contributors in a single transaction.
- */
-async function batchPay2(
+async function runPayrollPair(
     payrollRecord: string,
     contributorRecord1: string,
     contributorRecord2: string,
     fundingCredit1: string,
-    fundingCredit2: string
+    fundingCredit2: string,
+    finalizeCycle: boolean
 ) {
-    console.log("\n🚀 Executing batch_pay_2...");
-    
-    const { programManager, networkClient } = await setupProgramManager();
-    
-    const txId = await programManager.execute(
-        PROGRAM_ID,
-        "batch_pay_2",
-        [payrollRecord, contributorRecord1, contributorRecord2, fundingCredit1, fundingCredit2],
-        1.5,
-        false
+    console.log("\n🚀 Running payroll...");
+    return executeAndWait(
+        "execute_payroll_batch_2",
+        [
+            payrollRecord,
+            contributorRecord1,
+            contributorRecord2,
+            fundingCredit1,
+            fundingCredit2,
+            finalizeCycle ? "true" : "false",
+        ],
+        1.5
     );
-    
-    console.log(`✅ Transaction submitted: ${txId}`);
-    await waitForTransaction(networkClient, txId);
-    
-    return txId;
 }
 
-/**
- * Batch pay 3 contributors in a single transaction.
- */
-async function batchPay3(
+async function runPayrollTrio(
     payrollRecord: string,
     contributorRecord1: string,
     contributorRecord2: string,
     contributorRecord3: string,
     fundingCredit1: string,
     fundingCredit2: string,
-    fundingCredit3: string
+    fundingCredit3: string,
+    finalizeCycle: boolean
 ) {
-    console.log("\n🚀 Executing batch_pay_3...");
-    
-    const { programManager, networkClient } = await setupProgramManager();
-    
-    const txId = await programManager.execute(
-        PROGRAM_ID,
-        "batch_pay_3",
+    console.log("\n🚀 Running payroll...");
+    return executeAndWait(
+        "execute_payroll_batch_3",
         [
             payrollRecord,
-            contributorRecord1, contributorRecord2, contributorRecord3,
-            fundingCredit1, fundingCredit2, fundingCredit3
+            contributorRecord1,
+            contributorRecord2,
+            contributorRecord3,
+            fundingCredit1,
+            fundingCredit2,
+            fundingCredit3,
+            finalizeCycle ? "true" : "false",
         ],
-        2.0,
-        false
+        2.0
     );
-    
-    console.log(`✅ Transaction submitted: ${txId}`);
-    await waitForTransaction(networkClient, txId);
-    
-    return txId;
 }
 
-/**
- * Disclose the total spent budget (voluntary transparency).
- */
+async function closeCycle(payrollRecord: string) {
+    console.log("\n🚀 Closing cycle...");
+    return executeAndWait("close_cycle", [payrollRecord]);
+}
+
+async function openNextCycle(payrollRecord: string) {
+    console.log("\n🚀 Opening next cycle...");
+    return executeAndWait("open_next_cycle", [payrollRecord]);
+}
+
 async function discloseSpent(payrollRecord: string) {
-    console.log("\n🚀 Executing disclose_spent...");
-    
-    const { programManager, networkClient } = await setupProgramManager();
-    
-    const txId = await programManager.execute(
-        PROGRAM_ID,
-        "disclose_spent",
-        [payrollRecord],
-        1.0,
-        false
-    );
-    
-    console.log(`✅ Transaction submitted: ${txId}`);
-    await waitForTransaction(networkClient, txId);
-    
-    return txId;
+    console.log("\n🚀 Disclosing cycle status...");
+    return executeAndWait("disclose_cycle_spent", [payrollRecord]);
 }
 
-// ============================================
-// Main - Example Usage
-// ============================================
+async function handoffPayrollToManager(payrollRecord: string) {
+    console.log("\n🚀 Delegating payroll to manager...");
+    return executeAndWait("handoff_payroll_to_manager", [payrollRecord]);
+}
+
+async function handoffPayrollToOwner(payrollRecord: string) {
+    console.log("\n🚀 Returning payroll to owner...");
+    return executeAndWait("handoff_payroll_to_owner", [payrollRecord]);
+}
+
+async function transferContributorOperator(contributorRecord: string, newOwner: string) {
+    console.log("\n🚀 Updating contributor operator...");
+    return executeAndWait("transfer_contributor_operator", [contributorRecord, newOwner]);
+}
 
 async function main() {
     const command = process.argv[2];
-    
-    console.log("🔧 Aleo Program Execution Script");
+
+    console.log("🔧 Confidential Payroll Execution Script");
     console.log("=".repeat(50));
-    
+
     switch (command) {
-        case "init":
-            // Example: npx tsx execute.ts init 1000000
-            const budget = parseInt(process.argv[3] || "1000000");
-            await initPayroll(budget);
+        case "init": {
+            const payrollId = process.argv[3];
+            const budgetUsdCents = parseInt(process.argv[4] || "0", 10);
+            const microcreditsPerUsdCent = parseInt(process.argv[5] || "0", 10);
+            const manager = process.argv[6] || "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc";
+            if (!payrollId || !budgetUsdCents || !microcreditsPerUsdCent) {
+                console.error("Usage: npx tsx execute.ts init <payroll_id> <budget_usd_cents> <microcredits_per_usd_cent> [manager]");
+                process.exit(1);
+            }
+            await initPayroll(payrollId, budgetUsdCents, microcreditsPerUsdCent, manager);
             break;
-            
+        }
         case "add-contributor": {
-            // Example: npx tsx execute.ts add-contributor <payroll_record> <address> <payout>
             const payrollRecord = process.argv[3];
-            const address = process.argv[4];
-            const payout = parseInt(process.argv[5] || "100000");
-            
-            if (!payrollRecord || !address) {
-                console.error("Usage: npx tsx execute.ts add-contributor <payroll_record> <address> <payout>");
+            const contributorAddress = process.argv[4];
+            const payoutUsdCents = parseInt(process.argv[5] || "0", 10);
+            const recurring = (process.argv[6] || "false").toLowerCase() === "true";
+            if (!payrollRecord || !contributorAddress || !payoutUsdCents) {
+                console.error("Usage: npx tsx execute.ts add-contributor <payroll_record> <address> <payout_usd_cents> [recurring]");
                 process.exit(1);
             }
-            await addContributor(payrollRecord, address, payout);
+            await addContributor(payrollRecord, contributorAddress, payoutUsdCents, recurring);
             break;
         }
-            
-        case "pay": {
-            // Example: npx tsx execute.ts pay <payroll_record> <contributor_record> <funding_credit>
-            const payroll = process.argv[3];
-            const contributor = process.argv[4];
-            const funding = process.argv[5];
-            
-            if (!payroll || !contributor || !funding) {
-                console.error("Usage: npx tsx execute.ts pay <payroll_record> <contributor_record> <funding_credit>");
+        case "run-payroll-1": {
+            const [payrollRecord, contributorRecord, fundingCredit, finalizeCycle = "false"] = process.argv.slice(3);
+            if (!payrollRecord || !contributorRecord || !fundingCredit) {
+                console.error("Usage: npx tsx execute.ts run-payroll-1 <payroll> <contributor> <private_balance_record> [finalize]");
                 process.exit(1);
             }
-            await payContributor(payroll, contributor, funding);
+            await runPayrollSingle(payrollRecord, contributorRecord, fundingCredit, finalizeCycle === "true");
             break;
         }
-
-        case "batch-pay-2": {
-            // Example: npx tsx execute.ts batch-pay-2 <payroll> <c1> <c2> <f1> <f2>
-            const args = process.argv.slice(3);
-            if (args.length < 5) {
-                console.error("Usage: npx tsx execute.ts batch-pay-2 <payroll> <c1> <c2> <f1> <f2>");
+        case "run-payroll-2": {
+            const [payrollRecord, contributorRecord1, contributorRecord2, fundingCredit1, fundingCredit2, finalizeCycle = "false"] = process.argv.slice(3);
+            if (!payrollRecord || !contributorRecord1 || !contributorRecord2 || !fundingCredit1 || !fundingCredit2) {
+                console.error("Usage: npx tsx execute.ts run-payroll-2 <payroll> <c1> <c2> <private_balance_1> <private_balance_2> [finalize]");
                 process.exit(1);
             }
-            await batchPay2(args[0], args[1], args[2], args[3], args[4]);
+            await runPayrollPair(payrollRecord, contributorRecord1, contributorRecord2, fundingCredit1, fundingCredit2, finalizeCycle === "true");
             break;
         }
-
-        case "batch-pay-3": {
-            // Example: npx tsx execute.ts batch-pay-3 <payroll> <c1> <c2> <c3> <f1> <f2> <f3>
-            const args = process.argv.slice(3);
-            if (args.length < 7) {
-                console.error("Usage: npx tsx execute.ts batch-pay-3 <payroll> <c1> <c2> <c3> <f1> <f2> <f3>");
+        case "run-payroll-3": {
+            const [payrollRecord, contributorRecord1, contributorRecord2, contributorRecord3, fundingCredit1, fundingCredit2, fundingCredit3, finalizeCycle = "false"] = process.argv.slice(3);
+            if (!payrollRecord || !contributorRecord1 || !contributorRecord2 || !contributorRecord3 || !fundingCredit1 || !fundingCredit2 || !fundingCredit3) {
+                console.error("Usage: npx tsx execute.ts run-payroll-3 <payroll> <c1> <c2> <c3> <private_balance_1> <private_balance_2> <private_balance_3> [finalize]");
                 process.exit(1);
             }
-            await batchPay3(args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
+            await runPayrollTrio(
+                payrollRecord,
+                contributorRecord1,
+                contributorRecord2,
+                contributorRecord3,
+                fundingCredit1,
+                fundingCredit2,
+                fundingCredit3,
+                finalizeCycle === "true"
+            );
             break;
         }
-            
+        case "close": {
+            const payrollRecord = process.argv[3];
+            if (!payrollRecord) {
+                console.error("Usage: npx tsx execute.ts close <payroll_record>");
+                process.exit(1);
+            }
+            await closeCycle(payrollRecord);
+            break;
+        }
+        case "open-next": {
+            const payrollRecord = process.argv[3];
+            if (!payrollRecord) {
+                console.error("Usage: npx tsx execute.ts open-next <payroll_record>");
+                process.exit(1);
+            }
+            await openNextCycle(payrollRecord);
+            break;
+        }
         case "disclose": {
-            // Example: npx tsx execute.ts disclose <payroll_record>
-            const record = process.argv[3];
-            
-            if (!record) {
+            const payrollRecord = process.argv[3];
+            if (!payrollRecord) {
                 console.error("Usage: npx tsx execute.ts disclose <payroll_record>");
                 process.exit(1);
             }
-            await discloseSpent(record);
+            await discloseSpent(payrollRecord);
             break;
         }
-            
+        case "handoff-manager": {
+            const payrollRecord = process.argv[3];
+            if (!payrollRecord) {
+                console.error("Usage: npx tsx execute.ts handoff-manager <payroll_record>");
+                process.exit(1);
+            }
+            await handoffPayrollToManager(payrollRecord);
+            break;
+        }
+        case "handoff-owner": {
+            const payrollRecord = process.argv[3];
+            if (!payrollRecord) {
+                console.error("Usage: npx tsx execute.ts handoff-owner <payroll_record>");
+                process.exit(1);
+            }
+            await handoffPayrollToOwner(payrollRecord);
+            break;
+        }
+        case "transfer-contributor": {
+            const contributorRecord = process.argv[3];
+            const newOwner = process.argv[4];
+            if (!contributorRecord || !newOwner) {
+                console.error("Usage: npx tsx execute.ts transfer-contributor <contributor_record> <new_owner>");
+                process.exit(1);
+            }
+            await transferContributorOperator(contributorRecord, newOwner);
+            break;
+        }
         default:
             console.log(`
 Usage:
-  npx tsx execute.ts init <total_budget>
-  npx tsx execute.ts add-contributor <payroll_record> <address> <payout>
-  npx tsx execute.ts pay <payroll_record> <contributor_record> <funding_credit>
-  npx tsx execute.ts batch-pay-2 <payroll> <c1> <c2> <f1> <f2>
-  npx tsx execute.ts batch-pay-3 <payroll> <c1> <c2> <c3> <f1> <f2> <f3>
+  npx tsx execute.ts init <payroll_id> <budget_usd_cents> <microcredits_per_usd_cent> [manager]
+  npx tsx execute.ts add-contributor <payroll_record> <address> <payout_usd_cents> [recurring]
+  npx tsx execute.ts run-payroll-1 <payroll> <contributor> <private_balance_record> [finalize]
+  npx tsx execute.ts run-payroll-2 <payroll> <c1> <c2> <private_balance_1> <private_balance_2> [finalize]
+  npx tsx execute.ts run-payroll-3 <payroll> <c1> <c2> <c3> <private_balance_1> <private_balance_2> <private_balance_3> [finalize]
+  npx tsx execute.ts close <payroll_record>
+  npx tsx execute.ts open-next <payroll_record>
   npx tsx execute.ts disclose <payroll_record>
-
-Examples:
-  npx tsx execute.ts init 1000000
-  npx tsx execute.ts add-contributor "record1..." "aleo1..." 50000
-  npx tsx execute.ts pay "payroll_rec..." "contributor_rec..." "credit_rec..."
+  npx tsx execute.ts handoff-manager <payroll_record>
+  npx tsx execute.ts handoff-owner <payroll_record>
+  npx tsx execute.ts transfer-contributor <contributor_record> <new_owner>
             `);
     }
 }

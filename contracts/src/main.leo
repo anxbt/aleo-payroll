@@ -1,338 +1,552 @@
 import credits.aleo;
 
-program payroll_rishav_v3.aleo {
+program payroll_rishav_v5.aleo {
 
-    // =========================
-    // Constructor (required for deployment)
-    // =========================
-
-    @custom
-    async constructor() {
-        assert_eq(true, true);
-    }
-
-    // =========================
-    // Records
-    // =========================
+    @noupgrade
+    async constructor() {}
 
     record Payroll {
         owner: address,
-        total_budget: u64,
-        spent_budget: u64,
+        treasury_owner: address,
+        manager: address,
+        payroll_id: field,
+        budget_usd: u64,
+        cycle_due_usd: u64,
+        active_commitment_usd: u64,
+        spent_usd: u64,
+        microcredits_per_usd_cent: u64,
+        cycle_index: u64,
+        status: u8,
     }
 
     record Contributor {
         owner: address,
-        payroll_owner: address,
+        payroll_id: field,
         contributor: address,
-        payout: u64,
-        paid: bool,
+        payout_usd: u64,
+        recurring: bool,
+        active: bool,
+        last_paid_cycle: u64,
     }
 
     record PaymentReceipt {
         owner: address,
+        payroll_id: field,
         contributor: address,
-        amount: u64,
+        payout_usd: u64,
+        amount_microcredits: u64,
+        cycle_index: u64,
     }
 
-    // =========================
-    // Initialize Payroll
-    // =========================
-    // Creates a payroll with a declared budget.
-    // No credits are consumed — budget is internal accounting.
-    // Real credit movement happens at payout time.
+    record CycleSummary {
+        owner: address,
+        payroll_id: field,
+        cycle_index: u64,
+        budget_usd: u64,
+        spent_usd: u64,
+        status: u8,
+    }
+
+    function active_after_payment(recurring: bool) -> bool {
+        if recurring {
+            return true;
+        }
+
+        return false;
+    }
+
+    function next_status(finalize_cycle: bool) -> u8 {
+        if finalize_cycle {
+            return 1u8;
+        }
+
+        return 0u8;
+    }
+
+    function next_commitment_after_pay(
+        active_commitment_usd: u64,
+        payout_usd: u64,
+        recurring: bool
+    ) -> u64 {
+        if recurring {
+            return active_commitment_usd;
+        }
+
+        return active_commitment_usd - payout_usd;
+    }
 
     transition init_payroll(
-        budget: u64
+        payroll_id: field,
+        budget_usd: u64,
+        microcredits_per_usd_cent: u64,
+        manager: address
     ) -> Payroll {
+        assert(budget_usd > 0u64);
+        assert(microcredits_per_usd_cent > 0u64);
 
-        // Budget must be positive
-        assert(budget > 0u64);
-
-        // Initialize payroll
         let payroll: Payroll = Payroll {
             owner: self.caller,
-            total_budget: budget,
-            spent_budget: 0u64,
+            treasury_owner: self.caller,
+            manager,
+            payroll_id,
+            budget_usd,
+            cycle_due_usd: 0u64,
+            active_commitment_usd: 0u64,
+            spent_usd: 0u64,
+            microcredits_per_usd_cent,
+            cycle_index: 1u64,
+            status: 0u8,
         };
 
         return payroll;
     }
 
-    // =========================
-    // Add Contributor
-    // =========================
-    // Reserves payout from remaining budget immediately.
-    // spent_budget is incremented at add-time to prevent overcommitment.
-
     transition add_contributor(
         payroll: Payroll,
         contributor_address: address,
-        payout_amount: u64
+        payout_usd: u64,
+        recurring: bool
     ) -> (Payroll, Contributor) {
-
-        // Ensure caller is payroll owner
         assert(self.caller == payroll.owner);
+        assert(payroll.owner == payroll.treasury_owner);
+        assert(payroll.status == 0u8);
+        assert(payout_usd > 0u64);
 
-        // Ensure enough remaining budget
-        let remaining: u64 = payroll.total_budget - payroll.spent_budget;
-        assert(payout_amount <= remaining);
+        let next_active_commitment: u64 = payroll.active_commitment_usd + payout_usd;
+        let next_cycle_due: u64 = payroll.cycle_due_usd + payout_usd;
 
-        // Reserve the committed payout in spent_budget
+        assert(next_active_commitment <= payroll.budget_usd);
+        assert(next_cycle_due <= payroll.budget_usd);
+
         let updated_payroll: Payroll = Payroll {
             owner: payroll.owner,
-            total_budget: payroll.total_budget,
-            spent_budget: payroll.spent_budget + payout_amount,
+            treasury_owner: payroll.treasury_owner,
+            manager: payroll.manager,
+            payroll_id: payroll.payroll_id,
+            budget_usd: payroll.budget_usd,
+            cycle_due_usd: next_cycle_due,
+            active_commitment_usd: next_active_commitment,
+            spent_usd: payroll.spent_usd,
+            microcredits_per_usd_cent: payroll.microcredits_per_usd_cent,
+            cycle_index: payroll.cycle_index,
+            status: payroll.status,
         };
 
-        // Create contributor record
         let contributor: Contributor = Contributor {
             owner: payroll.owner,
-            payroll_owner: payroll.owner,
+            payroll_id: payroll.payroll_id,
             contributor: contributor_address,
-            payout: payout_amount,
-            paid: false,
+            payout_usd,
+            recurring,
+            active: true,
+            last_paid_cycle: 0u64,
         };
 
         return (updated_payroll, contributor);
     }
 
-    // =========================
-    // Pay Contributor
-    // =========================
-    // Owner supplies funding credit >= payout amount.
-    // Deterministic payout (derived from contributor record).
-    // Uses transfer_private for real credit movement.
-    // Change from overfunded credit is returned to caller automatically.
-
-    transition pay_contributor(
+    transition execute_payroll_batch_1(
         payroll: Payroll,
-        contributor: Contributor,
-        funding_credit: credits.aleo/credits
+        c1: Contributor,
+        f1: credits.aleo/credits,
+        finalize_cycle: bool
     ) -> (Payroll, Contributor, PaymentReceipt) {
-
-        // Only payroll owner can execute
         assert(self.caller == payroll.owner);
+        assert(payroll.status == 0u8);
+        assert(c1.payroll_id == payroll.payroll_id);
+        assert(c1.active == true);
+        assert(c1.last_paid_cycle < payroll.cycle_index);
 
-        // Contributor must belong to payroll
-        assert(contributor.payroll_owner == payroll.owner);
+        let payout_1: u64 = c1.payout_usd * payroll.microcredits_per_usd_cent;
+        assert(f1.microcredits >= payout_1);
 
-        // Prevent double payment
-        assert(contributor.paid == false);
+        let next_spent: u64 = payroll.spent_usd + c1.payout_usd;
+        assert(next_spent <= payroll.cycle_due_usd);
 
-        // Funding credit must be sufficient (change returned automatically)
-        assert(funding_credit.microcredits >= contributor.payout);
+        if finalize_cycle {
+            assert(next_spent == payroll.cycle_due_usd);
+        } else {
+            assert(next_spent < payroll.cycle_due_usd);
+        }
 
-        // Perform private transfer (change record returned to caller by credits.aleo)
-        credits.aleo/transfer_private(
-            funding_credit,
-            contributor.contributor,
-            contributor.payout
-        );
+        credits.aleo/transfer_private(f1, c1.contributor, payout_1);
 
-        // Payroll accounting unchanged — budget was already reserved at add_contributor time
+        let next_active_commitment: u64 = next_commitment_after_pay(payroll.active_commitment_usd, c1.payout_usd, c1.recurring);
+
         let updated_payroll: Payroll = Payroll {
             owner: payroll.owner,
-            total_budget: payroll.total_budget,
-            spent_budget: payroll.spent_budget,
+            treasury_owner: payroll.treasury_owner,
+            manager: payroll.manager,
+            payroll_id: payroll.payroll_id,
+            budget_usd: payroll.budget_usd,
+            cycle_due_usd: payroll.cycle_due_usd,
+            active_commitment_usd: next_active_commitment,
+            spent_usd: next_spent,
+            microcredits_per_usd_cent: payroll.microcredits_per_usd_cent,
+            cycle_index: payroll.cycle_index,
+            status: next_status(finalize_cycle),
         };
 
-        // Mark contributor as paid
-        let updated_contributor: Contributor = Contributor {
-            owner: contributor.owner,
-            payroll_owner: contributor.payroll_owner,
-            contributor: contributor.contributor,
-            payout: contributor.payout,
-            paid: true,
+        let updated_c1: Contributor = Contributor {
+            owner: c1.owner,
+            payroll_id: c1.payroll_id,
+            contributor: c1.contributor,
+            payout_usd: c1.payout_usd,
+            recurring: c1.recurring,
+            active: active_after_payment(c1.recurring),
+            last_paid_cycle: payroll.cycle_index,
         };
 
-        // Create receipt
-        let receipt: PaymentReceipt = PaymentReceipt {
-            owner: contributor.contributor,
-            contributor: contributor.contributor,
-            amount: contributor.payout,
+        let receipt_1: PaymentReceipt = PaymentReceipt {
+            owner: c1.contributor,
+            payroll_id: payroll.payroll_id,
+            contributor: c1.contributor,
+            payout_usd: c1.payout_usd,
+            amount_microcredits: payout_1,
+            cycle_index: payroll.cycle_index,
         };
 
-        return (updated_payroll, updated_contributor, receipt);
+        return (updated_payroll, updated_c1, receipt_1);
     }
 
-    // =========================
-    // Batch Pay 2 Contributors
-    // =========================
-    // Pays exactly 2 contributors in a single transaction.
-    // Each contributor needs its own funding credit (>= payout).
-    // Inputs: 5 (1 payroll + 2 contributors + 2 funding credits)
-    // Outputs: 5 explicit (1 payroll + 2 contributors + 2 receipts) + 2 change records from transfer_private = 7 total
-
-    transition batch_pay_2(
+    transition execute_payroll_batch_2(
         payroll: Payroll,
         c1: Contributor,
         c2: Contributor,
         f1: credits.aleo/credits,
-        f2: credits.aleo/credits
+        f2: credits.aleo/credits,
+        finalize_cycle: bool
     ) -> (Payroll, Contributor, Contributor, PaymentReceipt, PaymentReceipt) {
-
-        // Only payroll owner can execute
         assert(self.caller == payroll.owner);
+        assert(payroll.status == 0u8);
 
-        // Contributors must belong to this payroll
-        assert(c1.payroll_owner == payroll.owner);
-        assert(c2.payroll_owner == payroll.owner);
+        assert(c1.payroll_id == payroll.payroll_id);
+        assert(c2.payroll_id == payroll.payroll_id);
+        assert(c1.active == true);
+        assert(c2.active == true);
+        assert(c1.last_paid_cycle < payroll.cycle_index);
+        assert(c2.last_paid_cycle < payroll.cycle_index);
 
-        // Prevent double payment
-        assert(c1.paid == false);
-        assert(c2.paid == false);
+        let payout_1: u64 = c1.payout_usd * payroll.microcredits_per_usd_cent;
+        let payout_2: u64 = c2.payout_usd * payroll.microcredits_per_usd_cent;
+        assert(f1.microcredits >= payout_1);
+        assert(f2.microcredits >= payout_2);
 
-        // Funding credits must be sufficient
-        assert(f1.microcredits >= c1.payout);
-        assert(f2.microcredits >= c2.payout);
+        let next_spent: u64 = payroll.spent_usd + c1.payout_usd + c2.payout_usd;
+        assert(next_spent <= payroll.cycle_due_usd);
 
-        // Perform private transfers
-        credits.aleo/transfer_private(f1, c1.contributor, c1.payout);
-        credits.aleo/transfer_private(f2, c2.contributor, c2.payout);
+        if finalize_cycle {
+            assert(next_spent == payroll.cycle_due_usd);
+        } else {
+            assert(next_spent < payroll.cycle_due_usd);
+        }
 
-        // Payroll accounting unchanged (budget reserved at add-time)
+        credits.aleo/transfer_private(f1, c1.contributor, payout_1);
+        credits.aleo/transfer_private(f2, c2.contributor, payout_2);
+
+        let after_first_payment: u64 = next_commitment_after_pay(payroll.active_commitment_usd, c1.payout_usd, c1.recurring);
+        let next_active_commitment: u64 = next_commitment_after_pay(after_first_payment, c2.payout_usd, c2.recurring);
+
         let updated_payroll: Payroll = Payroll {
             owner: payroll.owner,
-            total_budget: payroll.total_budget,
-            spent_budget: payroll.spent_budget,
+            treasury_owner: payroll.treasury_owner,
+            manager: payroll.manager,
+            payroll_id: payroll.payroll_id,
+            budget_usd: payroll.budget_usd,
+            cycle_due_usd: payroll.cycle_due_usd,
+            active_commitment_usd: next_active_commitment,
+            spent_usd: next_spent,
+            microcredits_per_usd_cent: payroll.microcredits_per_usd_cent,
+            cycle_index: payroll.cycle_index,
+            status: next_status(finalize_cycle),
         };
 
-        // Mark contributors as paid
-        let paid_c1: Contributor = Contributor {
+        let updated_c1: Contributor = Contributor {
             owner: c1.owner,
-            payroll_owner: c1.payroll_owner,
+            payroll_id: c1.payroll_id,
             contributor: c1.contributor,
-            payout: c1.payout,
-            paid: true,
+            payout_usd: c1.payout_usd,
+            recurring: c1.recurring,
+            active: active_after_payment(c1.recurring),
+            last_paid_cycle: payroll.cycle_index,
         };
 
-        let paid_c2: Contributor = Contributor {
+        let updated_c2: Contributor = Contributor {
             owner: c2.owner,
-            payroll_owner: c2.payroll_owner,
+            payroll_id: c2.payroll_id,
             contributor: c2.contributor,
-            payout: c2.payout,
-            paid: true,
+            payout_usd: c2.payout_usd,
+            recurring: c2.recurring,
+            active: active_after_payment(c2.recurring),
+            last_paid_cycle: payroll.cycle_index,
         };
 
-        // Create receipts
-        let r1: PaymentReceipt = PaymentReceipt {
+        let receipt_1: PaymentReceipt = PaymentReceipt {
             owner: c1.contributor,
+            payroll_id: payroll.payroll_id,
             contributor: c1.contributor,
-            amount: c1.payout,
+            payout_usd: c1.payout_usd,
+            amount_microcredits: payout_1,
+            cycle_index: payroll.cycle_index,
         };
 
-        let r2: PaymentReceipt = PaymentReceipt {
+        let receipt_2: PaymentReceipt = PaymentReceipt {
             owner: c2.contributor,
+            payroll_id: payroll.payroll_id,
             contributor: c2.contributor,
-            amount: c2.payout,
+            payout_usd: c2.payout_usd,
+            amount_microcredits: payout_2,
+            cycle_index: payroll.cycle_index,
         };
 
-        return (updated_payroll, paid_c1, paid_c2, r1, r2);
+        return (updated_payroll, updated_c1, updated_c2, receipt_1, receipt_2);
     }
 
-    // =========================
-    // Batch Pay 3 Contributors
-    // =========================
-    // Pays exactly 3 contributors in a single transaction.
-    // Inputs: 7 (1 payroll + 3 contributors + 3 funding credits)
-    // Outputs: 7 explicit (1 payroll + 3 contributors + 3 receipts) + 3 change records = 10 total
-
-    transition batch_pay_3(
+    transition execute_payroll_batch_3(
         payroll: Payroll,
         c1: Contributor,
         c2: Contributor,
         c3: Contributor,
         f1: credits.aleo/credits,
         f2: credits.aleo/credits,
-        f3: credits.aleo/credits
+        f3: credits.aleo/credits,
+        finalize_cycle: bool
     ) -> (Payroll, Contributor, Contributor, Contributor, PaymentReceipt, PaymentReceipt, PaymentReceipt) {
-
-        // Only payroll owner can execute
         assert(self.caller == payroll.owner);
+        assert(payroll.status == 0u8);
 
-        // Contributors must belong to this payroll
-        assert(c1.payroll_owner == payroll.owner);
-        assert(c2.payroll_owner == payroll.owner);
-        assert(c3.payroll_owner == payroll.owner);
+        assert(c1.payroll_id == payroll.payroll_id);
+        assert(c2.payroll_id == payroll.payroll_id);
+        assert(c3.payroll_id == payroll.payroll_id);
+        assert(c1.active == true);
+        assert(c2.active == true);
+        assert(c3.active == true);
+        assert(c1.last_paid_cycle < payroll.cycle_index);
+        assert(c2.last_paid_cycle < payroll.cycle_index);
+        assert(c3.last_paid_cycle < payroll.cycle_index);
 
-        // Prevent double payment
-        assert(c1.paid == false);
-        assert(c2.paid == false);
-        assert(c3.paid == false);
+        let payout_1: u64 = c1.payout_usd * payroll.microcredits_per_usd_cent;
+        let payout_2: u64 = c2.payout_usd * payroll.microcredits_per_usd_cent;
+        let payout_3: u64 = c3.payout_usd * payroll.microcredits_per_usd_cent;
+        assert(f1.microcredits >= payout_1);
+        assert(f2.microcredits >= payout_2);
+        assert(f3.microcredits >= payout_3);
 
-        // Funding credits must be sufficient
-        assert(f1.microcredits >= c1.payout);
-        assert(f2.microcredits >= c2.payout);
-        assert(f3.microcredits >= c3.payout);
+        let next_spent: u64 = payroll.spent_usd + c1.payout_usd + c2.payout_usd + c3.payout_usd;
+        assert(next_spent <= payroll.cycle_due_usd);
 
-        // Perform private transfers
-        credits.aleo/transfer_private(f1, c1.contributor, c1.payout);
-        credits.aleo/transfer_private(f2, c2.contributor, c2.payout);
-        credits.aleo/transfer_private(f3, c3.contributor, c3.payout);
+        if finalize_cycle {
+            assert(next_spent == payroll.cycle_due_usd);
+        } else {
+            assert(next_spent < payroll.cycle_due_usd);
+        }
 
-        // Payroll accounting unchanged (budget reserved at add-time)
+        credits.aleo/transfer_private(f1, c1.contributor, payout_1);
+        credits.aleo/transfer_private(f2, c2.contributor, payout_2);
+        credits.aleo/transfer_private(f3, c3.contributor, payout_3);
+
+        let after_first_payment: u64 = next_commitment_after_pay(payroll.active_commitment_usd, c1.payout_usd, c1.recurring);
+        let after_second_payment: u64 = next_commitment_after_pay(after_first_payment, c2.payout_usd, c2.recurring);
+        let next_active_commitment: u64 = next_commitment_after_pay(after_second_payment, c3.payout_usd, c3.recurring);
+
         let updated_payroll: Payroll = Payroll {
             owner: payroll.owner,
-            total_budget: payroll.total_budget,
-            spent_budget: payroll.spent_budget,
+            treasury_owner: payroll.treasury_owner,
+            manager: payroll.manager,
+            payroll_id: payroll.payroll_id,
+            budget_usd: payroll.budget_usd,
+            cycle_due_usd: payroll.cycle_due_usd,
+            active_commitment_usd: next_active_commitment,
+            spent_usd: next_spent,
+            microcredits_per_usd_cent: payroll.microcredits_per_usd_cent,
+            cycle_index: payroll.cycle_index,
+            status: next_status(finalize_cycle),
         };
 
-        // Mark contributors as paid
-        let paid_c1: Contributor = Contributor {
+        let updated_c1: Contributor = Contributor {
             owner: c1.owner,
-            payroll_owner: c1.payroll_owner,
+            payroll_id: c1.payroll_id,
             contributor: c1.contributor,
-            payout: c1.payout,
-            paid: true,
+            payout_usd: c1.payout_usd,
+            recurring: c1.recurring,
+            active: active_after_payment(c1.recurring),
+            last_paid_cycle: payroll.cycle_index,
         };
 
-        let paid_c2: Contributor = Contributor {
+        let updated_c2: Contributor = Contributor {
             owner: c2.owner,
-            payroll_owner: c2.payroll_owner,
+            payroll_id: c2.payroll_id,
             contributor: c2.contributor,
-            payout: c2.payout,
-            paid: true,
+            payout_usd: c2.payout_usd,
+            recurring: c2.recurring,
+            active: active_after_payment(c2.recurring),
+            last_paid_cycle: payroll.cycle_index,
         };
 
-        let paid_c3: Contributor = Contributor {
+        let updated_c3: Contributor = Contributor {
             owner: c3.owner,
-            payroll_owner: c3.payroll_owner,
+            payroll_id: c3.payroll_id,
             contributor: c3.contributor,
-            payout: c3.payout,
-            paid: true,
+            payout_usd: c3.payout_usd,
+            recurring: c3.recurring,
+            active: active_after_payment(c3.recurring),
+            last_paid_cycle: payroll.cycle_index,
         };
 
-        // Create receipts
-        let r1: PaymentReceipt = PaymentReceipt {
+        let receipt_1: PaymentReceipt = PaymentReceipt {
             owner: c1.contributor,
+            payroll_id: payroll.payroll_id,
             contributor: c1.contributor,
-            amount: c1.payout,
+            payout_usd: c1.payout_usd,
+            amount_microcredits: payout_1,
+            cycle_index: payroll.cycle_index,
         };
 
-        let r2: PaymentReceipt = PaymentReceipt {
+        let receipt_2: PaymentReceipt = PaymentReceipt {
             owner: c2.contributor,
+            payroll_id: payroll.payroll_id,
             contributor: c2.contributor,
-            amount: c2.payout,
+            payout_usd: c2.payout_usd,
+            amount_microcredits: payout_2,
+            cycle_index: payroll.cycle_index,
         };
 
-        let r3: PaymentReceipt = PaymentReceipt {
+        let receipt_3: PaymentReceipt = PaymentReceipt {
             owner: c3.contributor,
+            payroll_id: payroll.payroll_id,
             contributor: c3.contributor,
-            amount: c3.payout,
+            payout_usd: c3.payout_usd,
+            amount_microcredits: payout_3,
+            cycle_index: payroll.cycle_index,
         };
 
-        return (updated_payroll, paid_c1, paid_c2, paid_c3, r1, r2, r3);
+        return (updated_payroll, updated_c1, updated_c2, updated_c3, receipt_1, receipt_2, receipt_3);
     }
 
-    // =========================
-    // Disclose Spent (Optional)
-    // =========================
-
-    transition disclose_spent(
+    transition close_cycle(
         payroll: Payroll
-    ) -> (Payroll, u64) {
+    ) -> (Payroll, CycleSummary) {
+        assert(self.caller == payroll.owner);
+        assert(payroll.status == 1u8);
 
-        return (payroll, payroll.spent_budget);
+        let closed_payroll: Payroll = Payroll {
+            owner: payroll.owner,
+            treasury_owner: payroll.treasury_owner,
+            manager: payroll.manager,
+            payroll_id: payroll.payroll_id,
+            budget_usd: payroll.budget_usd,
+            cycle_due_usd: payroll.cycle_due_usd,
+            active_commitment_usd: payroll.active_commitment_usd,
+            spent_usd: payroll.spent_usd,
+            microcredits_per_usd_cent: payroll.microcredits_per_usd_cent,
+            cycle_index: payroll.cycle_index,
+            status: 2u8,
+        };
+
+        let summary: CycleSummary = CycleSummary {
+            owner: payroll.owner,
+            payroll_id: payroll.payroll_id,
+            cycle_index: payroll.cycle_index,
+            budget_usd: payroll.budget_usd,
+            spent_usd: payroll.spent_usd,
+            status: 2u8,
+        };
+
+        return (closed_payroll, summary);
+    }
+
+    transition open_next_cycle(
+        payroll: Payroll
+    ) -> Payroll {
+        assert(self.caller == payroll.owner);
+        assert(payroll.status == 2u8);
+
+        let next_payroll: Payroll = Payroll {
+            owner: payroll.owner,
+            treasury_owner: payroll.treasury_owner,
+            manager: payroll.manager,
+            payroll_id: payroll.payroll_id,
+            budget_usd: payroll.budget_usd,
+            cycle_due_usd: payroll.active_commitment_usd,
+            active_commitment_usd: payroll.active_commitment_usd,
+            spent_usd: 0u64,
+            microcredits_per_usd_cent: payroll.microcredits_per_usd_cent,
+            cycle_index: payroll.cycle_index + 1u64,
+            status: 0u8,
+        };
+
+        return next_payroll;
+    }
+
+    transition disclose_cycle_spent(
+        payroll: Payroll
+    ) -> (Payroll, u64, u8) {
+        return (payroll, payroll.spent_usd, payroll.status);
+    }
+
+    transition handoff_payroll_to_manager(
+        payroll: Payroll
+    ) -> Payroll {
+        assert(self.caller == payroll.owner);
+        assert(payroll.owner == payroll.treasury_owner);
+        assert(payroll.manager != payroll.treasury_owner);
+
+        let delegated_payroll: Payroll = Payroll {
+            owner: payroll.manager,
+            treasury_owner: payroll.treasury_owner,
+            manager: payroll.manager,
+            payroll_id: payroll.payroll_id,
+            budget_usd: payroll.budget_usd,
+            cycle_due_usd: payroll.cycle_due_usd,
+            active_commitment_usd: payroll.active_commitment_usd,
+            spent_usd: payroll.spent_usd,
+            microcredits_per_usd_cent: payroll.microcredits_per_usd_cent,
+            cycle_index: payroll.cycle_index,
+            status: payroll.status,
+        };
+
+        return delegated_payroll;
+    }
+
+    transition handoff_payroll_to_owner(
+        payroll: Payroll
+    ) -> Payroll {
+        assert(self.caller == payroll.owner);
+        assert(payroll.owner == payroll.manager);
+
+        let returned_payroll: Payroll = Payroll {
+            owner: payroll.treasury_owner,
+            treasury_owner: payroll.treasury_owner,
+            manager: payroll.manager,
+            payroll_id: payroll.payroll_id,
+            budget_usd: payroll.budget_usd,
+            cycle_due_usd: payroll.cycle_due_usd,
+            active_commitment_usd: payroll.active_commitment_usd,
+            spent_usd: payroll.spent_usd,
+            microcredits_per_usd_cent: payroll.microcredits_per_usd_cent,
+            cycle_index: payroll.cycle_index,
+            status: payroll.status,
+        };
+
+        return returned_payroll;
+    }
+
+    transition transfer_contributor_operator(
+        contributor: Contributor,
+        new_owner: address
+    ) -> Contributor {
+        assert(self.caller == contributor.owner);
+
+        let updated_contributor: Contributor = Contributor {
+            owner: new_owner,
+            payroll_id: contributor.payroll_id,
+            contributor: contributor.contributor,
+            payout_usd: contributor.payout_usd,
+            recurring: contributor.recurring,
+            active: contributor.active,
+            last_paid_cycle: contributor.last_paid_cycle,
+        };
+
+        return updated_contributor;
     }
 }

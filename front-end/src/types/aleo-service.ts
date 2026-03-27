@@ -1,4 +1,5 @@
 import { TransactionOptions } from "@provablehq/aleo-types";
+import { DEPLOYED_PROGRAM_ID } from "@/lib/deployment";
 
 // Re-export for convenience
 export type { TransactionOptions };
@@ -11,6 +12,6 @@ export interface AleoServiceConfig {
 
 // Default Configuration
 export const DEFAULT_CONFIG: AleoServiceConfig = {
-    programId: "payroll_rishav_v3.aleo",
+    programId: DEPLOYED_PROGRAM_ID,
     defaultFee: 1_000_000, // 1 credit
 };

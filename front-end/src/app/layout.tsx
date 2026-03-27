@@ -3,8 +3,8 @@ import "./globals.css";
 import { WalletProvider } from "@/components/wallet-provider";
 
 export const metadata: Metadata = {
-  title: "Aleo Private Pool",
-  description: "Private contribution & distribution pool powered by Aleo zero-knowledge proofs",
+  title: "Private Contributor Payments for DAOs and Teams",
+  description: "USD-denominated private contributor payouts for DAOs and teams, powered by Aleo zero-knowledge execution.",
 };
 
 export default function RootLayout({

@@ -1,39 +1,40 @@
-// Record Types matching payroll_rishav_v3.aleo contract (Wave 3)
-// ARCHITECTURE:
-// 1. init_payroll creates budget-tracking record (no credits consumed)
-// 2. add_contributor reserves budget immediately (spent_budget incremented)
-// 3. pay_contributor / batch_pay accepts funding_credit >= payout (change returned)
-// 4. Contract enforces deterministic payout and prevents double payment
-
-// Credits record from credits.aleo
 export interface CreditRecord {
     id: string;
     owner: string;
     microcredits: number;
-    ciphertext: string;   // encrypted record (record1...)
-    plaintext: string;    // plaintext record string for transaction inputs
-}
-
-// Payroll record - internal budget tracking
-// spent_budget includes committed (added) + paid contributors
-export interface PayrollRecord {
-    id: string;
-    owner: string;
-    total_budget: number;
-    spent_budget: number;
-    remaining_budget: number; // computed: total_budget - spent_budget
     ciphertext: string;
     plaintext: string;
 }
 
-// Contributor record with committed payout and payment status
+export type PayrollStatusCode = 0 | 1 | 2;
+
+export interface PayrollRecord {
+    id: string;
+    owner: string;
+    treasury_owner: string;
+    manager: string;
+    payroll_id: string;
+    budget_usd_cents: number;
+    cycle_due_usd_cents: number;
+    active_commitment_usd_cents: number;
+    spent_usd_cents: number;
+    microcredits_per_usd_cent: number;
+    cycle_index: number;
+    status: PayrollStatusCode;
+    remaining_cycle_usd_cents: number;
+    ciphertext: string;
+    plaintext: string;
+}
+
 export interface ContributorRecord {
     id: string;
     owner: string;
-    payroll_owner: string;
+    payroll_id: string;
     contributor: string;
-    payout: number;  // Committed payout amount (deterministic)
-    paid: boolean;   // Payment status to prevent double payment
+    payout_usd_cents: number;
+    recurring: boolean;
+    active: boolean;
+    last_paid_cycle: number;
     ciphertext: string;
     plaintext: string;
 }
@@ -41,17 +42,31 @@ export interface ContributorRecord {
 export interface PaymentReceiptRecord {
     id: string;
     owner: string;
+    payroll_id: string;
     contributor: string;
-    amount: number;
+    payout_usd_cents: number;
+    amount_microcredits: number;
+    cycle_index: number;
     ciphertext: string;
     plaintext: string;
 }
 
-// Transaction Types
-export type TransactionStatus = 
+export interface CycleSummaryRecord {
+    id: string;
+    owner: string;
+    payroll_id: string;
+    cycle_index: number;
+    budget_usd_cents: number;
+    spent_usd_cents: number;
+    status: PayrollStatusCode;
+    ciphertext: string;
+    plaintext: string;
+}
+
+export type TransactionStatus =
     | "Pending"
-    | "Proving" 
-    | "Broadcasting" 
+    | "Proving"
+    | "Broadcasting"
     | "Finalized"
     | "Accepted"
     | "Failed"
@@ -65,41 +80,33 @@ export interface TransactionResult {
     error?: string;
 }
 
-// UI State Types
 export interface PayrollState {
     payrolls: PayrollRecord[];
     contributors: ContributorRecord[];
     receipts: PaymentReceiptRecord[];
+    summaries: CycleSummaryRecord[];
     credits: CreditRecord[];
     isLoading: boolean;
     error: string | null;
 }
 
-// Form Input Types
 export interface InitPayrollInput {
-    budget: number;  // Budget in microcredits
+    payrollId: string;
+    budgetUsdCents: number;
+    microcreditsPerUsdCent: number;
+    manager: string;
 }
 
 export interface AddContributorInput {
     payrollRecordId: string;
     contributorAddress: string;
-    payoutAmount: number;  // Committed in the Contributor record
+    payoutUsdCents: number;
+    recurring: boolean;
 }
 
-export interface PayContributorInput {
+export interface RunPayrollInput {
     payrollRecordId: string;
-    contributorRecordId: string;
-    fundingCreditId: string;  // Must have microcredits >= contributor.payout
-}
-
-export interface BatchPayInput {
-    payrollRecordId: string;
-    payments: Array<{
-        contributorRecordId: string;
-        fundingCreditId: string;
-    }>;
-}
-
-export interface DiscloseSpentInput {
-    payrollRecordId: string;
+    contributorRecordIds: string[];
+    fundingCreditIds: string[];
+    finalizeCycle: boolean;
 }

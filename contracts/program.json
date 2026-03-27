@@ -1,7 +1,7 @@
 {
-  "program": "payroll_rishav_v3.aleo",
-  "version": "0.2.0",
-  "description": "Private payroll system with real credit integration",
+  "program": "payroll_rishav_v5.aleo",
+  "version": "0.4.0",
+  "description": "Confidential payroll infrastructure with USD-denominated cycles and recurring contributors",
   "license": "MIT",
   "leo": "3.4.0",
   "dependencies": [

@@ -1,55 +1,66 @@
-"use client"
+"use client";
 
 import Link from "next/link";
+import { Shield, ArrowRight, Building2, Coins, Repeat, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Shield, Send, Lock, ArrowRight } from "lucide-react";
-import { DecryptedText } from "@/components/animations/decrypted-text";
-import { FadeIn } from "@/components/animations/fade-in";
-import { SplitText } from "@/components/animations/split-text";
+import { CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DarkVeil } from "@/components/animations/dark-veil";
+import { FadeIn } from "@/components/animations/fade-in";
 import { SpotlightCard } from "@/components/animations/spotlight-card";
-import { Cubes } from "@/components/animations/cubes";
+import { SplitText } from "@/components/animations/split-text";
+
+const useCases = [
+  {
+    title: "DAO Payroll",
+    description: "Pay contributors privately without exposing salary data or treasury activity onchain.",
+    icon: Building2,
+  },
+  {
+    title: "Grants And Bounties",
+    description: "Use the same private payroll flow for grants, milestone payouts, and contributor bounties.",
+    icon: Coins,
+  },
+  {
+    title: "Recurring Cycles",
+    description: "Carry approved contributors across payroll cycles so monthly payouts stay consistent and easy to run.",
+    icon: Repeat,
+  },
+];
+
+const faqs = [
+  {
+    question: "Why are payouts defined in USD?",
+    answer: "Budgets and contributor payouts are set in USD terms, while the contract deterministically converts them at execution using the payroll's USD Rate (Locked). Designed for USD-denominated payroll (future integration with USDCX/USAD).",
+  },
+  {
+    question: "How does the system stay confidential?",
+    answer: "Aleo records keep contributor identities, private balance records, and amounts private while zero-knowledge execution enforces payroll rules.",
+  },
+  {
+    question: "What does the manager role do?",
+    answer: "The owner defines policy by creating payrolls and setting payouts. A manager can optionally run payroll operations later without changing those rules.",
+  },
+  {
+    question: "How fast is the demo flow?",
+    answer: "The happy path is under a minute: create payroll, add contributors, run payroll, and watch all contributors settle privately.",
+  },
+];
 
 export default function Home() {
-  const faqs = [
-    {
-      question: "How does the pool stay confidential?",
-      answer:
-        "All contributions and payouts are wrapped in zero-knowledge proofs. Amounts and participant identities remain encrypted while proofs attest to budget compliance.",
-    },
-    {
-      question: "Which wallets can I use?",
-      answer:
-        "We support Shield today and are adding other Aleo-compatible wallets next. Connect, fund, and sign proofs without exposing plaintext data.",
-    },
-    {
-      question: "Can contributors audit payouts?",
-      answer:
-        "Yes. Contributors see proof outputs and spent notes tied to their commitments, so they can confirm distributions without revealing allocations publicly.",
-    },
-    {
-      question: "What happens if the pool is underfunded?",
-      answer:
-        "Payout proofs enforce the budget cap. If deposits are insufficient, distributions fail gracefully until commitments are fully funded.",
-    },
-  ];
-
   return (
     <div className="flex min-h-screen flex-col">
-      {/* Header */}
       <header className="sticky top-0 z-50 w-full border-b border-border bg-background/90 backdrop-blur-sm">
-        <div className="max-w-6xl mx-auto flex h-14 items-center justify-between px-4 md:px-6">
-          <div className="flex items-center space-x-2">
+        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 md:px-6">
+          <div className="flex items-center gap-2">
             <Shield className="h-5 w-5 text-accent" />
-            <span className="text-base font-semibold tracking-tight">AleoPool</span>
+            <span className="text-base font-semibold tracking-tight">Confidential Payroll</span>
           </div>
-          <nav className="hidden md:flex gap-6">
-            <Link className="text-sm text-text-secondary hover:text-text-primary transition-colors" href="#features">
-              Features
+          <nav className="hidden gap-6 md:flex">
+            <Link className="text-sm text-text-secondary hover:text-text-primary transition-colors" href="#use-cases">
+              Use cases
             </Link>
-            <Link className="text-sm text-text-secondary hover:text-text-primary transition-colors" href="#how-it-works">
-              How it works
+            <Link className="text-sm text-text-secondary hover:text-text-primary transition-colors" href="#workflow">
+              Workflow
             </Link>
           </nav>
           <Link href="/app">
@@ -59,137 +70,112 @@ export default function Home() {
       </header>
 
       <main className="flex-1">
-        {/* Hero Section with Dark Veil */}
         <DarkVeil className="py-20 md:py-32">
-          <div className="max-w-4xl mx-auto px-4 md:px-6 text-center">
+          <div className="mx-auto max-w-2xl px-4 text-center md:px-6">
             <FadeIn delay={0.1}>
-              <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl md:text-6xl mb-6">
-                <SplitText text="Confidential Payroll Infrastructure" />
-                <br />
-                <span className="text-accent">
-                  <DecryptedText text="on Aleo" speed={80} />
-                </span>
+              <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl md:text-6xl">
+                <SplitText text="Private Payroll for DAOs" />
               </h1>
             </FadeIn>
-            <FadeIn delay={0.4}>
-              <p className="mx-auto max-w-2xl text-text-secondary text-lg md:text-xl mb-10">
-                Define payout commitments, enforce budget constraints, and execute private credit transfers — without revealing contributor identities or allocation amounts.
+            <FadeIn delay={0.25}>
+              <p className="mt-4 text-lg text-text-primary md:text-xl">
+                Pay contributors in USD — without exposing salaries on-chain.
               </p>
             </FadeIn>
-            <FadeIn delay={0.6}>
-              <div className="flex flex-col sm:flex-row gap-4 justify-center">
+            <FadeIn delay={0.35}>
+              <p className="mt-4 text-sm text-text-primary">
+                Built on Aleo with zero-knowledge privacy.
+              </p>
+            </FadeIn>
+            <FadeIn delay={0.5}>
+              <div className="mt-6 flex flex-col justify-center gap-4 sm:flex-row">
                 <Link href="/app">
                   <Button size="lg" className="px-8">
-                    Launch App <ArrowRight className="ml-2 h-4 w-4" />
+                    Run a Private Payroll <ArrowRight className="ml-2 h-4 w-4" />
                   </Button>
                 </Link>
-                <Link href="https://github.com" target="_blank">
+                <a href="https://github.com" target="_blank" rel="noreferrer">
                   <Button variant="outline" size="lg" className="px-8">
                     View Source
                   </Button>
-                </Link>
+                </a>
               </div>
             </FadeIn>
           </div>
         </DarkVeil>
 
-        {/* ZK Visualization Section */}
-        <section className="py-20 border-y border-border bg-surface/30">
-          <div className="max-w-5xl mx-auto px-4 md:px-6">
-            <div className="grid md:grid-cols-2 gap-12 items-center">
-              <FadeIn direction="left">
-                <Cubes />
-              </FadeIn>
-              <FadeIn direction="right">
-                <div className="text-center md:text-left">
-                  <p className="text-sm text-accent font-medium mb-2">Zero-Knowledge Proofs</p>
-                  <h2 className="text-2xl font-semibold tracking-tight mb-4">
-                    <DecryptedText text="Cryptographic Privacy" speed={60} />
-                  </h2>
-                  <p className="text-text-secondary">
-                    Zero-knowledge proofs enforce pool rules while keeping contributors, recipients, and amounts opaque to the network. Only validity — not details — is broadcast.
-                  </p>
-                </div>
-              </FadeIn>
-            </div>
-          </div>
-        </section>
-
-        {/* 3-Step Explanation */}
-        <section id="how-it-works" className="py-20 md:py-28">
-          <div className="max-w-5xl mx-auto px-4 md:px-6">
-            <FadeIn className="text-center mb-12">
-              <p className="text-sm text-accent font-medium mb-2">How it works</p>
-              <h2 className="text-3xl font-semibold tracking-tight">
-                Ship payroll with private proofs
-              </h2>
+        <section id="use-cases" className="border-y border-border bg-surface/20 py-20">
+          <div className="mx-auto max-w-6xl px-4 md:px-6">
+            <FadeIn className="mb-12 text-center">
+              <p className="mb-2 text-sm font-medium text-accent">Use cases</p>
+              <h2 className="text-3xl font-semibold tracking-tight">Built for real contributor payments</h2>
             </FadeIn>
-            <div className="grid md:grid-cols-3 gap-6">
-              <FadeIn delay={0.1}>
-                <SpotlightCard className="h-full">
-                  <CardHeader>
-                    <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center mb-3">
-                      <Lock className="h-5 w-5 text-accent" />
-                    </div>
-                    <CardTitle>1. Define commitments</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <CardDescription>
-                      Set recipients, lock budgets, and encode rules into commitments that govern each payout.
-                    </CardDescription>
-                  </CardContent>
-                </SpotlightCard>
-              </FadeIn>
-              <FadeIn delay={0.2}>
-                <SpotlightCard className="h-full">
-                  <CardHeader>
-                    <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center mb-3">
-                      <Shield className="h-5 w-5 text-accent" />
-                    </div>
-                    <CardTitle>2. Fund privately</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <CardDescription>
-                      Contributors deposit credits into the pool. Balances stay shielded while proofs track obligations.
-                    </CardDescription>
-                  </CardContent>
-                </SpotlightCard>
-              </FadeIn>
-              <FadeIn delay={0.3}>
-                <SpotlightCard className="h-full">
-                  <CardHeader>
-                    <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center mb-3">
-                      <Send className="h-5 w-5 text-accent" />
-                    </div>
-                    <CardTitle>3. Prove and pay out</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <CardDescription>
-                      Generate proofs showing releases respect budgets. Recipients receive encrypted records; the network only sees validity.
-                    </CardDescription>
-                  </CardContent>
-                </SpotlightCard>
-              </FadeIn>
+            <div className="grid gap-6 md:grid-cols-3">
+              {useCases.map((item, index) => {
+                const Icon = item.icon;
+                return (
+                  <FadeIn key={item.title} delay={0.1 + index * 0.1}>
+                    <SpotlightCard className="h-full">
+                      <CardHeader>
+                        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-accent/10">
+                          <Icon className="h-5 w-5 text-accent" />
+                        </div>
+                        <CardTitle>{item.title}</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <CardDescription>{item.description}</CardDescription>
+                      </CardContent>
+                    </SpotlightCard>
+                  </FadeIn>
+                );
+              })}
             </div>
           </div>
         </section>
 
-        {/* FAQ Section */}
-        <section className="py-20 md:py-28 border-t border-border bg-surface/20">
-          <div className="max-w-4xl mx-auto px-4 md:px-6">
-            <FadeIn className="text-center mb-10">
-              <p className="text-sm text-accent font-medium mb-2">FAQ</p>
-              <h2 className="text-3xl font-semibold tracking-tight">What to know before you fund</h2>
+        <section id="workflow" className="py-20 md:py-28">
+          <div className="mx-auto max-w-5xl px-4 md:px-6">
+            <FadeIn className="mb-12 text-center">
+              <p className="mb-2 text-sm font-medium text-accent">Workflow</p>
+              <h2 className="text-3xl font-semibold tracking-tight">Create Payroll, Add Contributors, Run Payroll, View Results</h2>
+            </FadeIn>
+            <div className="grid gap-6 md:grid-cols-4">
+              {[
+                "Define a USD-denominated budget and lock the payroll's USD rate.",
+                "Set contributor payouts in USD, with optional recurring payments.",
+                "Run payroll to pay contributors privately from available private balance.",
+                "View paid results immediately and move to the next cycle when ready.",
+              ].map((step, index) => (
+                <FadeIn key={step} delay={0.1 + index * 0.08}>
+                  <SpotlightCard className="h-full">
+                    <CardHeader>
+                      <CardTitle>{index + 1}. Cycle step</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <CardDescription>{step}</CardDescription>
+                    </CardContent>
+                  </SpotlightCard>
+                </FadeIn>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="border-t border-border bg-surface/20 py-20 md:py-28">
+          <div className="mx-auto max-w-4xl px-4 md:px-6">
+            <FadeIn className="mb-10 text-center">
+              <p className="mb-2 text-sm font-medium text-accent">FAQ</p>
+              <h2 className="text-3xl font-semibold tracking-tight">What teams need to know</h2>
             </FadeIn>
             <div className="space-y-4">
               {faqs.map((item) => (
                 <FadeIn key={item.question}>
-                  <details className="group border border-border rounded-xl bg-surface/40 px-5 py-4 transition-colors">
+                  <details className="group rounded-xl border border-border bg-surface/40 px-5 py-4">
                     <summary className="flex cursor-pointer items-center justify-between text-left text-lg font-medium text-text-primary">
                       <span>{item.question}</span>
                       <span className="text-sm text-accent transition-transform duration-200 group-open:rotate-45">+</span>
                     </summary>
-                    <p className="mt-3 text-text-secondary leading-relaxed">{item.answer}</p>
+                    <p className="mt-3 leading-relaxed text-text-secondary">{item.answer}</p>
                   </details>
                 </FadeIn>
               ))}
@@ -197,12 +183,12 @@ export default function Home() {
           </div>
         </section>
 
-        {/* CTA Section */}
-        <section className="py-20 border-t border-border">
-          <FadeIn className="max-w-3xl mx-auto px-4 md:px-6 text-center">
-            <h2 className="text-2xl font-semibold mb-4">Move payroll to private rails</h2>
-            <p className="text-text-secondary mb-8">
-              Launch a pool, fund it with shielded credits, and release payouts with cryptographic assurance on Aleo.
+        <section className="border-t border-border py-20">
+          <FadeIn className="mx-auto max-w-3xl px-4 text-center md:px-6">
+            <Wallet className="mx-auto mb-4 h-10 w-10 text-accent" />
+            <h2 className="mb-4 text-2xl font-semibold">Private payroll rails for real treasury work</h2>
+            <p className="mb-8 text-text-secondary">
+              Start with one DAO contributor payroll and extend the same flow to grants, bounties, and team operations.
             </p>
             <Link href="/app">
               <Button size="lg" className="px-10">
@@ -213,11 +199,9 @@ export default function Home() {
         </section>
       </main>
 
-      <footer className="py-8 border-t border-border">
-        <div className="max-w-6xl mx-auto px-4 md:px-6 text-center">
-          <p className="text-sm text-text-secondary">
-            Built on Aleo. Privacy by default. Wave 1.
-          </p>
+      <footer className="border-t border-border py-8">
+        <div className="mx-auto max-w-6xl px-4 text-center text-sm text-text-secondary md:px-6">
+          Built on Aleo for private contributor payments, grants, and bounty execution.
         </div>
       </footer>
     </div>

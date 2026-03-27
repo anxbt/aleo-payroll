@@ -20,7 +20,7 @@ export default function AppLayout({
                 <div className="max-w-5xl mx-auto flex h-14 items-center justify-between px-4 md:px-6">
                     <Link href="/" className="flex items-center gap-2">
                         <Shield className="h-5 w-5 text-accent" />
-                        <span className="font-semibold">AleoPool</span>
+                        <span className="font-semibold">Confidential Payroll</span>
                     </Link>
                     <WalletConnect />
                 </div>
